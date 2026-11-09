@@ -1,1 +1,9 @@
 yolo26m*.pt
+.venv/
+.cache/
+datasets/
+badminton/
+__pycache__/
+*.egg-info/
+build/
+dist/
