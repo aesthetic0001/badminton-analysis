@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 import cv2
 
-file_name = "./examples/monotrack/frames/000100.jpg"
+file_name = "./shot1.png"
 
 object_detection_model = YOLO("yolo26m.pt")
 pose_detection_model = YOLO("yolo26m-pose.pt")
