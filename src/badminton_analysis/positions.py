@@ -246,6 +246,41 @@ def wholebody_court_positions(keypoints, scores, H_court_to_image, min_score=0.4
     return foot_centres, foot_centres.mean(axis=1)
 
 
+def positions_from_observations(observations, H_court_to_image, court_min_score=.45,
+                                foot_min_score=.4, court_margin_m=1.):
+    """Project unfiltered cached poses and select one player per court half.
+
+    Scores for the fixed reference court are saved at extraction time. Changing
+    the homography also requires recomputing those scores from the video.
+    """
+    n = len(observations['frame_ids'])
+    positions = np.full((n, 2, 2), np.nan)
+    radii = np.full((n, 2), np.nan)
+    eligible = np.zeros(n, bool)
+    feet, stances = wholebody_court_positions(
+        observations['keypoints_px'], observations['keypoint_scores'],
+        H_court_to_image, foot_min_score,
+    )
+    near_court = (np.isfinite(stances).all(axis=1)
+                  & (stances >= -court_margin_m).all(axis=1)
+                  & (stances <= [court_width_m + court_margin_m,
+                                  court_length_m + court_margin_m]).all(axis=1))
+    offsets = observations['pose_offsets']
+    for i in range(n):
+        if not observations['court_scores'][i] >= court_min_score:
+            continue
+        candidates = np.flatnonzero(near_court[offsets[i]:offsets[i+1]]) + offsets[i]
+        if len(candidates) != 2:
+            continue
+        side = (stances[candidates, 1] >= court_length_m / 2).astype(int)
+        if set(side) != {0, 1}:
+            continue
+        positions[i, side] = stances[candidates]
+        radii[i, side] = np.linalg.norm(feet[candidates, 0] - feet[candidates, 1], axis=1) / 2
+        eligible[i] = True
+    return positions, radii, eligible
+
+
 def court_line_mask(frame):
     """Extract court stripe pixels using the notebook's intensity/tensor tests."""
     scale = frame.shape[0] / 1080
@@ -328,30 +363,40 @@ def align_court(layout, reference_corners):
 
 def motion_gate(positions, shuttle, valid, window=8, shuttle_deviation_px=20.,
                 player_displacement_m=.05):
-    """Keep valid frames when the shuttle OR both stances move in a trailing window."""
+    """Keep every valid frame covered by a confirmed offline motion window.
+
+    A window may use future observations. Confirming movement accepts its whole
+    interval, including opening frames. Runs shorter than the requested window
+    use all available observations, with at least two required to measure motion.
+    Invalid frames split runs; movement is never inferred across those gaps.
+    """
     positions, shuttle = np.asarray(positions, float), np.asarray(shuttle, float)
     valid = np.asarray(valid, bool)
     if positions.shape != (len(valid), 2, 2) or shuttle.shape != (len(valid), 2):
         raise ValueError("Expected positions (N, 2, 2), shuttle (N, 2), valid (N,).")
-    if window < 2 or min(shuttle_deviation_px, player_displacement_m) <= 0:
+    if (not isinstance(window, (int, np.integer)) or window < 2
+            or not np.isfinite([shuttle_deviation_px, player_displacement_m]).all()
+            or min(shuttle_deviation_px, player_displacement_m) <= 0):
         raise ValueError("Use a window >=2 and positive motion thresholds.")
     accepted = np.zeros(len(valid), dtype=bool)
-    run_start = 0
-    for i in range(len(valid)):
-        if not valid[i] or not np.isfinite(positions[i]).all():
-            run_start = i + 1
+    usable = valid & np.isfinite(positions).all(axis=(1, 2))
+    transitions = np.diff(np.r_[False, usable, False].astype(np.int8))
+    for run_start, run_stop in zip(np.flatnonzero(transitions == 1),
+                                   np.flatnonzero(transitions == -1)):
+        size = min(window, run_stop-run_start)
+        if size < 2:
             continue
-        start = max(run_start, i-window+1)
-        if i-start+1 < window:
-            continue
-        stances = positions[start:i+1]
-        player_motion = np.linalg.norm(stances-stances[0], axis=2).max(axis=0)
-        detections = shuttle[start:i+1]
-        detections = detections[np.isfinite(detections).all(axis=1)]
-        shuttle_moves = (len(detections) >= 2 and np.linalg.norm(
-            detections-detections.mean(axis=0), axis=1,
-        ).max() >= shuttle_deviation_px)
-        accepted[i] = shuttle_moves or (player_motion >= player_displacement_m).all()
+        for start in range(run_start, run_stop-size+1):
+            stop = start+size
+            stances = positions[start:stop]
+            player_motion = np.linalg.norm(stances-stances[0], axis=2).max(axis=0)
+            detections = shuttle[start:stop]
+            detections = detections[np.isfinite(detections).all(axis=1)]
+            shuttle_moves = (len(detections) >= 2 and np.linalg.norm(
+                detections-detections.mean(axis=0), axis=1,
+            ).max() >= shuttle_deviation_px)
+            if shuttle_moves or (player_motion >= player_displacement_m).all():
+                accepted[start:stop] = True
     return accepted
 
 

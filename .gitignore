@@ -1,9 +1,11 @@
 yolo26m*.pt
 .venv/
 .cache/
+data/player-position-heatmap/
 datasets/
 badminton/
 __pycache__/
 *.egg-info/
 build/
 dist/
+test_data/*.webm

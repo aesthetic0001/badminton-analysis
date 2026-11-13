@@ -19,12 +19,25 @@ PyTorch uses official CUDA wheels on Linux x86-64 and native PyPI wheels on macO
 
 ## MonoTrack native baseline
 
-See [the native setup guide](docs/monotrack.md) for Apple Silicon and Linux commands, current OpenCV support, public model downloads, and a bundled 64-frame test. [The smoke-test report](reports/monotrack-smoke/report.md) records results and limitations. This adapts MonoTrack's court/physics code with TrackNetV3, YOLO pose and heuristic hits; it does not reproduce the unavailable trained HitNet pipeline.
+This adapts MonoTrack's court/physics code with TrackNetV3, YOLO pose and heuristic hits; it does not reproduce the unavailable trained HitNet pipeline.
 
 ```bash
 .venv/bin/monotrack fetch
-.venv/bin/monotrack run examples/monotrack/frames \
-  --calibration examples/monotrack/calibration.json
 ```
 
 Model downloads and native build output live under `.cache/` and are excluded from Git. Earlier dataset exports, training runs and comparison experiments have been removed locally.
+
+## Player positions and replay videos
+
+Run `experiments/player_position_heatmap.ipynb` for player-position heatmaps. Its setup cell includes the CUDA pose dependencies. Raw poses, confidence scores, shuttle detections and calibration persist in compressed binary files under `data/player-position-heatmap/`, excluded from Git. Set `resume_run_id` to reuse a saved run; `chunk_frames` controls only the size of new chunks.
+
+Motion filtering uses offline windows, retaining earlier valid observations once movement is confirmed. Derived positions, heatmaps and videos are stored separately for each analysis configuration. The notebook can export the full annotated replay, accepted frames, rejected frames, and rejected frames that passed the court check.
+
+To export the last view from an existing full replay:
+
+```bash
+.venv/bin/python -m badminton_analysis.replay data/player-position-heatmap/<run-id> \
+  --rejected-court-passed-only --encoder h264_nvenc
+```
+
+Replay exports retain source frame IDs and matching audio; they use cached observations without model inference. FFmpeg is required for video export.
