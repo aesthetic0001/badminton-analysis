@@ -33,6 +33,15 @@ Run `experiments/player_position_heatmap.ipynb` for player-position heatmaps. It
 
 Motion filtering uses offline windows, retaining earlier valid observations once movement is confirmed. Derived positions, heatmaps and videos are stored separately for each analysis configuration. The notebook can export the full annotated replay, accepted frames, rejected frames, and rejected frames that passed the court check.
 
+V3 analysis prunes unreliable foot landmarks, computes each available foot centre,
+and uses the midpoint of available feet (including a single-foot fallback).
+Each court half is selected independently; missing or ambiguous players stay
+missing. Stance radius requires both feet. Offline motion windows accept moving
+shuttle evidence or movement from every observed player, without measuring player
+movement across visibility gaps. Heatmap coverage and CSV dwell time are counted
+separately for each player. New position/motion policy IDs keep these results
+separate from previous analyses; raw cached detections are reused.
+
 To export the last view from an existing full replay:
 
 ```bash

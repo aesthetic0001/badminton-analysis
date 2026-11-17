@@ -38,7 +38,8 @@ def _text(image, message, xy, colour=(230, 230, 230), size=.48):
 def _candidate_positions(chunk, homography, settings):
     """Show unique candidates per half even if the other player is missing."""
     _, stances = wholebody_court_positions(
-        chunk['keypoints_px'], chunk['keypoint_scores'], homography, settings['foot_min_score'])
+        chunk['keypoints_px'], chunk['keypoint_scores'], homography, settings['foot_min_score'],
+        allow_partial=settings.get('position_policy') == 'partial-feet-v3')
     margin = settings['court_margin_m']
     near_court = (np.isfinite(stances).all(axis=1) & (stances >= -margin).all(axis=1)
                   & (stances <= [court_width_m+margin, court_length_m+margin]).all(axis=1))
@@ -90,12 +91,15 @@ class _ReplayView:
             state, detail = 'COURT CHECK REJECTED', 'Projected positions are provisional'
             colour = (90, 100, 255)
         elif not eligible:
-            state, detail = 'PLAYER CHECK REJECTED', 'Need one confident player in each half'
+            detail = ('Need a unique usable player in at least one half'
+                      if self.settings.get('position_policy') == 'partial-feet-v3'
+                      else 'Need one confident player in each half')
+            state = 'PLAYER CHECK REJECTED'
             colour = (70, 170, 255)
         elif accepted:
             state, detail = 'ACCEPTED', 'Included in heatmaps'
             colour = (100, 225, 120)
-        elif (self.settings.get('motion_policy') != 'offline-window-coverage-v1'
+        elif (not self.settings.get('motion_policy', '').startswith('offline-window-coverage-')
               and self.streak < self.settings['motion_window']):
             state = 'MOTION WINDOW WARMUP'
             detail = f"{self.streak}/{self.settings['motion_window']} consecutive eligible frames"
@@ -103,7 +107,7 @@ class _ReplayView:
         else:
             state = 'MOTION CHECK REJECTED'
             detail = ('No confirmed movement in available valid observations'
-                      if self.settings.get('motion_policy') == 'offline-window-coverage-v1'
+                      if self.settings.get('motion_policy', '').startswith('offline-window-coverage-')
                       else 'Movement below the configured thresholds')
             colour = (70, 170, 255)
 
