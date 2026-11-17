@@ -213,8 +213,15 @@ def search_court_layout(
     return best
 
 
-def wholebody_court_positions(keypoints, scores, H_court_to_image, min_score=0.4):
-    """Return foot centres (N, 2, 2) and stance centres (N, 2), in metres."""
+def wholebody_court_positions(keypoints, scores, H_court_to_image, min_score=0.4,
+                             *, allow_partial=True):
+    """Return foot centres (N, 2, 2) and stance centres (N, 2), in metres.
+
+    Prune invalid landmarks before centring toes, then toes/heel, then feet.
+    Each available group has equal weight, preserving the full-foot formula.
+    A missing foot stays NaN; its partner can still supply the stance estimate.
+    Set allow_partial=False to reproduce pre-V3 analyses.
+    """
     keypoints = np.asarray(keypoints, dtype=np.float64)
     scores = np.asarray(scores, dtype=np.float64)
     H = np.asarray(H_court_to_image, dtype=np.float64)
@@ -240,18 +247,32 @@ def wholebody_court_positions(keypoints, scores, H_court_to_image, min_score=0.4
     court_landmarks = np.full(feet_px.shape, np.nan)
     np.divide(projected[..., :2], denominators[..., None],
               out=court_landmarks, where=valid[..., None])
-    toe_centres = court_landmarks[:, :, :2].mean(axis=2)
-    foot_centres = (toe_centres + court_landmarks[:, :, 2]) / 2
-    foot_centres[~valid.all(axis=2)] = np.nan
-    return foot_centres, foot_centres.mean(axis=1)
+    if not allow_partial:
+        toe_centres = court_landmarks[:, :, :2].mean(axis=2)
+        foot_centres = (toe_centres + court_landmarks[:, :, 2]) / 2
+        foot_centres[~valid.all(axis=2)] = np.nan
+        return foot_centres, foot_centres.mean(axis=1)
+
+    def available_mean(points, axis):
+        count = np.isfinite(points).all(axis=-1).sum(axis=axis)
+        return np.divide(np.nansum(points, axis=axis), count[..., None],
+                         out=np.full(count.shape + (2,), np.nan),
+                         where=count[..., None] > 0)
+
+    toe_centres = available_mean(court_landmarks[:, :, :2], axis=2)
+    foot_centres = available_mean(
+        np.stack([toe_centres, court_landmarks[:, :, 2]], axis=2), axis=2)
+    return foot_centres, available_mean(foot_centres, axis=1)
 
 
 def positions_from_observations(observations, H_court_to_image, court_min_score=.45,
                                 foot_min_score=.4, court_margin_m=1.):
-    """Project unfiltered cached poses and select one player per court half.
+    """Project cached poses and retain at most one player per court half.
 
     Scores for the fixed reference court are saved at extraction time. Changing
     the homography also requires recomputing those scores from the video.
+    Ambiguous halves are omitted independently. A frame needs one usable half.
+    Radii require both feet and remain NaN for single-foot estimates.
     """
     n = len(observations['frame_ids'])
     positions = np.full((n, 2, 2), np.nan)
@@ -270,14 +291,15 @@ def positions_from_observations(observations, H_court_to_image, court_min_score=
         if not observations['court_scores'][i] >= court_min_score:
             continue
         candidates = np.flatnonzero(near_court[offsets[i]:offsets[i+1]]) + offsets[i]
-        if len(candidates) != 2:
-            continue
         side = (stances[candidates, 1] >= court_length_m / 2).astype(int)
-        if set(side) != {0, 1}:
-            continue
-        positions[i, side] = stances[candidates]
-        radii[i, side] = np.linalg.norm(feet[candidates, 0] - feet[candidates, 1], axis=1) / 2
-        eligible[i] = True
+        for slot in (0, 1):
+            indices = candidates[side == slot]
+            if len(indices) != 1:
+                continue
+            index = indices[0]
+            positions[i, slot] = stances[index]
+            radii[i, slot] = np.linalg.norm(feet[index, 0] - feet[index, 1]) / 2
+        eligible[i] = np.isfinite(positions[i]).all(axis=1).any()
     return positions, radii, eligible
 
 
@@ -369,6 +391,9 @@ def motion_gate(positions, shuttle, valid, window=8, shuttle_deviation_px=20.,
     interval, including opening frames. Runs shorter than the requested window
     use all available observations, with at least two required to measure motion.
     Invalid frames split runs; movement is never inferred across those gaps.
+    With no moving shuttle, every player observed in the window must show
+    movement within a consecutive visible interval. Missing players are omitted,
+    never filled, and do not veto movement of the sole visible player.
     """
     positions, shuttle = np.asarray(positions, float), np.asarray(shuttle, float)
     valid = np.asarray(valid, bool)
@@ -379,7 +404,7 @@ def motion_gate(positions, shuttle, valid, window=8, shuttle_deviation_px=20.,
             or min(shuttle_deviation_px, player_displacement_m) <= 0):
         raise ValueError("Use a window >=2 and positive motion thresholds.")
     accepted = np.zeros(len(valid), dtype=bool)
-    usable = valid & np.isfinite(positions).all(axis=(1, 2))
+    usable = valid & np.isfinite(positions).all(axis=2).any(axis=1)
     transitions = np.diff(np.r_[False, usable, False].astype(np.int8))
     for run_start, run_stop in zip(np.flatnonzero(transitions == 1),
                                    np.flatnonzero(transitions == -1)):
@@ -389,13 +414,26 @@ def motion_gate(positions, shuttle, valid, window=8, shuttle_deviation_px=20.,
         for start in range(run_start, run_stop-size+1):
             stop = start+size
             stances = positions[start:stop]
-            player_motion = np.linalg.norm(stances-stances[0], axis=2).max(axis=0)
+            visible = np.isfinite(stances).all(axis=2)
+            player_moves = []
+            for slot in range(2):
+                if not visible[:, slot].any():
+                    continue
+                changes = np.diff(np.r_[False, visible[:, slot], False].astype(np.int8))
+                moves = False
+                for first, last in zip(np.flatnonzero(changes == 1),
+                                       np.flatnonzero(changes == -1)):
+                    points = stances[first:last, slot]
+                    if len(points) >= 2 and np.linalg.norm(
+                            points-points[0], axis=1).max() >= player_displacement_m:
+                        moves = True
+                player_moves.append(moves)
             detections = shuttle[start:stop]
             detections = detections[np.isfinite(detections).all(axis=1)]
             shuttle_moves = (len(detections) >= 2 and np.linalg.norm(
                 detections-detections.mean(axis=0), axis=1,
             ).max() >= shuttle_deviation_px)
-            if shuttle_moves or (player_motion >= player_displacement_m).all():
+            if shuttle_moves or (player_moves and all(player_moves)):
                 accepted[start:stop] = True
     return accepted
 
