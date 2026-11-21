@@ -10,6 +10,7 @@ from scipy.special import expit, logit
 import torch
 
 from badminton_analysis.jump_benchmark import evaluate_jump_scores, jump_operating_points
+from badminton_analysis.jump_decode import recover_jump_boundaries
 from badminton_analysis.jumps import JumpSegmenter, jump_segments, predict_airborne
 from pose_transfer import load_examples, load_sequence, pose_cache_fps
 
@@ -103,16 +104,23 @@ def report(development,validation_scores,holdout,p):
             'holdout_diagnostic':operating_points([holdout],[p])}
 
 
-def compare(development,holdout,proposal,penalty,weight,extension):
+def compare(development,holdout,proposal,penalty,weight,extension,*,recover=False):
+    def estimate(example,parameters):
+        source,candidates = example
+        adjusted = refine(source,candidates,parameters,weight,extension)
+        if recover:
+            _,base,fps = source
+            adjusted = recover_jump_boundaries(adjusted,base,fps=fps,before=2,after=1,min_score=.4)
+        return adjusted
+
     examples = [(source,propose(source[1],source[2],proposal)) for source in development]
     validation = []
     for i,example in enumerate(examples):
         trained = fit_verifier(examples[:i]+examples[i+1:],penalty)
-        validation.append(refine(*example,trained,weight,extension))
+        validation.append(estimate(example,trained))
     trained = fit_verifier(examples,penalty)
     candidates = propose(holdout[1],holdout[2],proposal)
-    evaluation = report(development,validation,holdout,
-                        refine(holdout,candidates,trained,weight,extension))
+    evaluation = report(development,validation,holdout,estimate((holdout,candidates),trained))
     return {'proposal_threshold':proposal,'penalty':penalty,'weight':weight,'extension_frames_at_30fps':extension,
             **evaluation}
 
@@ -139,7 +147,8 @@ def main():
               'window_fps':args.window_fps,
               'pose_only':report(development,[row[1] for row in development],holdout,holdout[1]),
               'higher_weight':compare(development,holdout,.58,8.,4.,0),
-              'lower_weight':compare(development,holdout,.30,2.,.5,1)}
+              'lower_weight':compare(development,holdout,.30,2.,.5,1),
+              'boundary_recovery':compare(development,holdout,.30,2.,.5,1,recover=True)}
     print(json.dumps(result,indent=2))
 
 
