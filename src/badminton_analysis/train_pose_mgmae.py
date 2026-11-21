@@ -29,6 +29,12 @@ BODY_REGIONS = {
     'Head': (14, 15, 16, 17, 18),
 }
 MIN_TARGET_CONFIDENCE = .3
+SKELETON_EDGES = (
+    (0,1), (0,2), (1,3), (2,4),
+    (5,6), (5,7), (7,9), (6,8), (8,10), (5,11), (6,12), (11,12),
+    (11,13), (13,15), (12,14), (14,16), (15,17), (15,18), (15,19),
+    (16,20), (16,21), (16,22),
+)
 
 
 def _feature_views(windows):
@@ -127,11 +133,19 @@ def _pretraining_inputs(sequence, split, fps):
     return torch.from_numpy(windows[usable])
 
 
-def _pretrain(model, windows, mode, epochs, mask_track=mask_leg_track):
+def _bone_vectors(pose, edges):
+    return pose[..., edges[:,1], :] - pose[..., edges[:,0], :]
+
+
+def _pretrain(model, windows, mode, epochs, mask_track=mask_leg_track, *, bone_weight=0.):
     encoder = model.network[:-1]
     joints = (windows.shape[-1] - 3) // 5
     decoder = nn.Sequential(nn.Linear(32, 128), nn.ReLU(),
                             nn.Linear(128, WINDOW_SIZE * joints * 4))
+    landmarks = BODY_LANDMARKS if joints == len(BODY_LANDMARKS) else LANDMARKS
+    landmark_index = {joint:i for i,joint in enumerate(landmarks)}
+    edges = torch.tensor([(landmark_index[a],landmark_index[b]) for a,b in SKELETON_EDGES
+                          if a in landmark_index and b in landmark_index])
     optimizer = torch.optim.AdamW([*encoder.parameters(), *decoder.parameters()], lr=.001)
     history = []
     for _ in range(epochs):
@@ -141,7 +155,7 @@ def _pretrain(model, windows, mode, epochs, mask_track=mask_leg_track):
             masked, reconstruct_position, reconstruct_motion = mask_track(
                 target, motion_guided=(mode == 'motion'),
             )
-            position, motion, _ = _feature_views(target)
+            position, motion, confidence = _feature_views(target)
             prediction = decoder(encoder(masked)).reshape(-1, WINDOW_SIZE, joints, 4)
             # Score only hidden, confident coordinates and motion samples.
             position_error = F.smooth_l1_loss(prediction[..., :2], position, reduction='none')
@@ -152,6 +166,14 @@ def _pretrain(model, windows, mode, epochs, mask_track=mask_leg_track):
             motion_loss = (motion_error * reconstruct_motion[..., None]).sum() / (
                 2 * reconstruct_motion.sum()).clamp(min=1)
             loss = position_loss + motion_loss
+            if bone_weight:
+                a,b = edges.T
+                valid = (confidence[...,a]>=MIN_TARGET_CONFIDENCE)&(confidence[...,b]>=MIN_TARGET_CONFIDENCE)
+                selected = valid & (reconstruct_position[...,a] | reconstruct_position[...,b])
+                restored = torch.where(reconstruct_position[...,None],prediction[...,:2],position)
+                error = F.smooth_l1_loss(_bone_vectors(restored,edges),_bone_vectors(position,edges),
+                                         reduction='none')
+                loss = loss + bone_weight * (error*selected[...,None]).sum() / (2*selected.sum()).clamp(min=1)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -172,7 +194,7 @@ def _classifier_weights(model):
 
 
 def run_experiment(run, labels_path, output, *, masking='motion', seed=7,
-                   pretrain_epochs=12, epochs=40, regions='legs'):
+                   pretrain_epochs=12, epochs=40, regions='legs', bone_weight=0.):
     output = Path(output)
     if output.suffix != '.pt' or output.exists() or output.with_suffix('.json').exists():
         raise ValueError('Use a new .pt output path for this experiment.')
@@ -180,6 +202,8 @@ def run_experiment(run, labels_path, output, *, masking='motion', seed=7,
         raise ValueError('Choose motion, uniform or none, and at least one pretraining epoch.')
     if regions not in ('legs', 'body'):
         raise ValueError('Choose legs or body regions.')
+    if not np.isfinite(bone_weight) or bone_weight < 0:
+        raise ValueError('Bone loss weight must be finite and nonnegative.')
     torch.manual_seed(seed)
     torch.set_num_threads(1)
     initial_weights = None
@@ -193,13 +217,16 @@ def run_experiment(run, labels_path, output, *, masking='motion', seed=7,
         windows = _pretraining_inputs(sequence, split, store.manifest['fps'])
         model = JumpSegmenter(windows.shape[-1])
         mask_track = mask_body_track if regions == 'body' else mask_leg_track
-        history = _pretrain(model, windows, masking, pretrain_epochs, mask_track)
+        history = _pretrain(model, windows, masking, pretrain_epochs, mask_track,
+                            bone_weight=bone_weight)
         initial_weights = _classifier_weights(model) if regions == 'body' else model.state_dict()
         pretraining = {'masking': masking, 'epochs': pretrain_epochs, 'windows': len(windows),
                        'leg_frames': MASK_FRAMES, 'validation_padding_seconds': 30,
                        'first_epoch_loss': history[0], 'last_epoch_loss': history[-1]}
         if regions == 'body':
             pretraining.update(regions=list(BODY_REGIONS), pretraining_landmarks=landmarks.tolist())
+        if bone_weight:
+            pretraining['bone_loss_weight'] = bone_weight
     report = train(run, labels_path, output, seed=seed, epochs=epochs,
                    initial_weights=initial_weights)
     report.update(seed=seed, supervised_epochs=epochs, masked_pretraining=pretraining,
@@ -215,13 +242,14 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--masking', choices=('motion', 'uniform', 'none'), default='motion')
     parser.add_argument('--regions', choices=('legs', 'body'), default='legs')
+    parser.add_argument('--bone-weight', type=float, default=0.)
     parser.add_argument('--seed', type=int, default=7)
     parser.add_argument('--pretrain-epochs', type=int, default=12)
     parser.add_argument('--epochs', type=int, default=40)
     args = parser.parse_args()
     report = run_experiment(args.run, args.labels, args.output, masking=args.masking,
                             seed=args.seed, pretrain_epochs=args.pretrain_epochs, epochs=args.epochs,
-                            regions=args.regions)
+                            regions=args.regions, bone_weight=args.bone_weight)
     print(json.dumps(report, indent=2))
 
 

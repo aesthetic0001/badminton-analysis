@@ -50,10 +50,10 @@ def _labels(path, frame_count):
     return labels
 
 
-def _pretrain_centers(path, count, fps, labels, seed, *, on_court=False):
+def _pretrain_centers(path, count, fps, labels, seed, *, on_court=False, groups=24):
     """Choose full-window RGB samples from rally footage, away from validation clips."""
-    if not labels['train']:
-        raise ValueError('Pretraining requires a training source.')
+    if not labels['train'] and labels['validation']:
+        raise ValueError('Keep validation-only sources out of pretraining.')
     offsets = np.arange(8)*3
     end = offsets[-1] + 2*CENTER + 1
     if on_court:
@@ -77,11 +77,11 @@ def _pretrain_centers(path, count, fps, labels, seed, *, on_court=False):
     if not len(starts):
         raise ValueError('No pretraining windows remain outside validation.')
     rng = np.random.default_rng(seed)
-    chosen = rng.choice(starts,size=min(24,len(starts)),replace=False)
+    chosen = rng.choice(starts,size=min(groups,len(starts)),replace=False)
     return np.unique((chosen[:,None]+offsets+CENTER).ravel())
 
 
-def _decode(capture, indices, destination):
+def _decode(capture, indices, destination, resize=resize_frame):
     # Seek between nearby clips and decode overlapping windows only once.
     frame = None
     for i, frame_id in enumerate(indices):
@@ -97,7 +97,7 @@ def _decode(capture, indices, destination):
         ok,bgr = capture.read()
         if not ok:
             raise ValueError(f'Cannot decode source frame {frame_id}.')
-        destination[i] = resize_frame(bgr)
+        destination[i] = resize(bgr)
         frame = frame_id
 
 
@@ -113,16 +113,22 @@ def prepare(config_path, directory):
         name = item['name']
         if not name or Path(name).name != name or name in ('.','..') or name in prepared:
             raise ValueError('Use a unique file-safe name for each source.')
-        video, annotations = ((config_path.parent / item[key]).resolve() for key in ('video','labels'))
+        video = (config_path.parent / item['video']).resolve()
+        annotations = (config_path.parent / item['labels']).resolve() if 'labels' in item else None
         if video in seen_videos:
             raise ValueError('Give each source video once to keep split checks effective.')
         seen_videos.add(video)
         upstream = (config_path.parent / item['pretraining']).resolve() if 'pretraining' in item else None
-        signature = {'video':file_fingerprint(video), 'labels':file_fingerprint(annotations,content=True),
+        groups = int(item.get('pretraining_groups', 24))
+        if groups < 1 or (annotations is None and upstream is None):
+            raise ValueError('Provide labels or pretraining footage and a positive group count.')
+        signature = {'video':file_fingerprint(video), 'labels':file_fingerprint(annotations,content=True) if annotations else None,
                      'pretraining':file_fingerprint(upstream) if upstream else None,
                      'pretraining_kind':item.get('pretraining_kind'),'shape':[FRAMES,HEIGHT,WIDTH],
                      'patch_size':int(WIDTH/GRID[1]),'sampling_seed':seed,
                      'unreviewed_label':UNREVIEWED}
+        if groups != 24:
+            signature['pretraining_groups'] = groups
         marker = directory/f'{name}.json'
         if marker.exists():
             if json.loads(marker.read_text()) != signature:
@@ -139,9 +145,10 @@ def prepare(config_path, directory):
             fps = capture.get(cv2.CAP_PROP_FPS)
             if not 29.5 <= fps <= 30.5:
                 raise ValueError(f'This pilot expects approximately 30 fps, got {fps} for {video}.')
-            labels = _labels(annotations,count)
+            labels = _labels(annotations,count) if annotations else {'train': {}, 'validation': {}}
             pretrain = (_pretrain_centers(upstream,count,fps,labels,seed,
-                                          on_court=item.get('pretraining_kind')=='court_scores')
+                                          on_court=item.get('pretraining_kind')=='court_scores',
+                                          groups=groups)
                         if upstream else np.empty(0,dtype=int))
             centers = np.unique(np.r_[pretrain,*[list(part) for part in labels.values()]]).astype(int)
             frames = centers[:,None]+np.arange(FRAMES)-CENTER
@@ -156,7 +163,7 @@ def prepare(config_path, directory):
             rng = np.random.default_rng(seed)
             for i,index in enumerate(pretrain_index):
                 masks[i] = flow_masks(pixels[mapping[index]],rng,flow)
-            arrays = {}
+            arrays = {'fps':np.asarray(fps)}
             for split, rows in labels.items():
                 ordered = sorted(rows)
                 arrays[split+'_index'] = np.searchsorted(centers,ordered)
@@ -186,8 +193,11 @@ def _prepare_training(sources):
     batches, targets = [], []
     for src in sources:
         labels = src.data['train_labels']
+        indices = src.data['train_index']
         known = (labels >= 0).any(axis=1)
-        batches.append(src.clips(src.data['train_index'][known]))
+        if 'available' in src.data:
+            known &= src.data['available'][indices]
+        batches.append(src.clips(indices[known]))
         targets.append(torch.from_numpy(labels[known]))
     return torch.cat(batches),torch.cat(targets)
 
@@ -222,6 +232,25 @@ def _pretrain(model,sources,epochs,seed):
     return history
 
 
+def _pretraining_inventory(sources):
+    frames_by_video = {}
+    for source in sources:
+        data = source.data
+        centers = data['centers'][data['pretrain']]
+        if len(centers):
+            name = str(data.get('video_name',source.name))
+            fps = float(data.get('fps',30))
+            frames = (centers[:,None]+np.arange(FRAMES)-CENTER).ravel()
+            frames_by_video.setdefault((name,fps),[]).append(frames)
+    videos = [
+        {'source':name,'unique_frames':count,'unique_seconds':count/fps}
+        for (name,fps),parts in frames_by_video.items()
+        for count in [len(np.unique(np.concatenate(parts)))]
+    ]
+    return {'windows':sum(len(source.data['pretrain']) for source in sources),
+            'unique_seconds':sum(video['unique_seconds'] for video in videos),'videos':videos}
+
+
 def _train_classifier(model,sources,epochs,seed):
     videos, targets = _prepare_training(sources)
     known = targets>=0
@@ -254,9 +283,12 @@ def _evaluate(model,source):
     if not len(indices):
         return None
     labels = source.data['validation_labels']
-    with torch.inference_mode():
-        scores = torch.cat([model(source.clips(group)).sigmoid() for group in np.array_split(
-            indices,int(np.ceil(len(indices)/8)))]).numpy()
+    available = source.data['available'][indices] if 'available' in source.data else np.ones(len(indices),bool)
+    scores = np.full(labels.shape,np.nan,dtype=np.float32)
+    if available.any():
+        with torch.inference_mode():
+            scores[available] = torch.cat([model(source.clips(group)).sigmoid() for group in np.array_split(
+                indices[available],int(np.ceil(available.sum()/8)))]).numpy()
     frames = source.data['centers'][indices]
     predictions = scores>=.5
     pos,neg = labels==1,labels==0
@@ -280,7 +312,7 @@ def _evaluate(model,source):
             'airborne_frames':int(pos.sum()),'false_positive_frames':int((predictions&neg).sum()),
             'negative_frames':int(neg.sum()),'matched_events':len(matched),'reference_events':len(truth),
             'predicted_events_in_reviewed_intervals':len(found),
-            'benchmark':evaluate_jump_scores(frame_targets,expanded,fps=30)}
+            'benchmark':evaluate_jump_scores(frame_targets,expanded,fps=float(source.data.get('fps',30)))}
 
 
 def train(directory,output, *, pretrain_epochs=6,epochs=14,seed=7):
@@ -293,13 +325,18 @@ def train(directory,output, *, pretrain_epochs=6,epochs=14,seed=7):
     torch.set_num_threads(3)
     torch.manual_seed(seed)
     sources = [_Source(directory,name) for name in json.loads((directory/'sources.json').read_text())]
-    model = RGBJumpSegmenter()
+    players = sources[0].data['train_labels'].shape[1]
+    model = RGBJumpSegmenter(players=players)
     pretrain_loss = _pretrain(model,sources,pretrain_epochs,seed) if pretrain_epochs else []
     trained = _train_classifier(model,sources,epochs,seed)
     model.eval()
     validation = [report for source in sources if (report := _evaluate(model,source)) is not None]
-    report = {'input':'full-frame RGB','window_frames':FRAMES,'resolution':[WIDTH,HEIGHT],'threshold':.5,
-              'seed':seed,'pretraining_losses':pretrain_loss,'fine_tune_epochs':epochs,
+    height,width = sources[0].pixels.shape[1:3]
+    report = {'input':'full-frame RGB' if players == 2 else 'per-player RGB crop',
+              'window_frames':FRAMES,'resolution':[width,height],'threshold':.5,
+              'seed':seed,'pretraining_losses':pretrain_loss,
+              'pretraining_corpus':_pretraining_inventory(sources) if pretrain_epochs else None,
+              'fine_tune_epochs':epochs,
               'training':trained,'validation':validation}
     output.parent.mkdir(parents=True,exist_ok=True)
     torch.save(model.state_dict(),output)

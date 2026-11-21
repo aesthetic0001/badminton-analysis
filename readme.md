@@ -85,6 +85,17 @@ The RGB experiment takes 13 consecutive broadcast frames and scores the near and
 
 The source configuration lists each video and its label CSV. A training source can also specify rally intervals or cached court scores for sampling unlabeled clips. Keep the validation match out of pretraining and fine-tuning. Pass `--pretrain-epochs 0` for a supervised RGB comparison.
 
+For clips with no contact labels, omit `labels` and specify `pretraining`. Set `pretraining_groups` to change the sample size for a source. The training report gives the number of clips and the duration of unique footage used after deduplicating overlapping windows.
+
+To try the same classifier on a single player, build a crop cache from the RGB cache and train from that directory. Both players use the same classifier. A fixed padded box across each 13-frame window keeps court contact and vertical motion in view.
+
+```bash
+.venv/bin/python -m badminton_analysis.prepare_rgb_player_crops CACHE_DIRECTORY CROP_CACHE --weights yolo26m.pt
+.venv/bin/python -m badminton_analysis.train_rgb_mgmae train CROP_CACHE PLAYER_MODEL.pt
+```
+
+The pose masking experiment accepts `--regions body --bone-weight .5` to reconstruct both masked landmarks and vectors between connected joints.
+
 ### Jump benchmark
 
 The benchmark reports strict frame recall and false-positive rate alongside one-to-one event recall. On 30 fps footage, a reference event up to six frames long allows one frame of error at either boundary. Longer reference events allow two frames. Convert these allowances to the source frame rate. Explicitly uncertain boundary frames widen the reference interval and are excluded from the frame metrics. Grounded frames and negligible split steps count as negatives at every scored frame.
