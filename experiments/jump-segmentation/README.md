@@ -159,3 +159,25 @@ The development set for this experiment includes 0003, 0033, 0063, 0010, and 001
 All three rows use cutoffs selected on the five development matches. At its development cutoff for higher recall, the ensemble scored 121/122 with 11 false flags. The boundary-weighted model scored 122/122 with 15 false flags. The best diagnostic sweep under the false-positive limit on audited 0018 recovered 120/122. That cutoff needs a separate evaluation. The strict frame targets remain unmet at a common verified operating point.
 
 Add `--temporal-augmentation` or `--boundary-weight 3` to the ranked training command for these variants. Pass all nine checkpoint paths before the `--dev` arguments to `verify_jump_events.py` to reproduce logit averaging.
+
+## Learned takeoff and landing transitions
+
+This experiment freezes the nine-checkpoint temporal ensemble and its event verifier. Once an event passes the verifier, the transition model fits a probability distribution over nearby takeoff and landing frames. Its inputs include the base score pattern, vertical hip motion, and the slower shoe's motion between adjacent observations. Training sums the probability assigned to every boundary consistent with the reviewed labels, including explicitly uncertain frames between confirmed contact and airborne states. At inference each event keeps its original score peak, and adjustments respect camera gaps and separation between accepted events.
+
+Training and cutoff selection used six prior matches. Each development estimate held one match out of both the verifier and transition fit, with a separate inner fold for setting the verifier cutoff. The score-only and motion variants used separately calibrated takeoff and landing quantiles.
+
+| Development method | Airborne frames detected (of 562) | False flags (of 2,390) | Matched events (of 61) |
+| --- | ---: | ---: | ---: |
+| Frozen verifier and boundary recovery | 537 | 12 | 60 |
+| Learned transitions, motion features | 538 | 11 | 58 |
+
+The independent [FineBadminton 0009 review](labels/finebadminton-0009.csv) covers 137 airborne frames, 577 negative frames, and 13 events at 30 fps. The 13th jump came from checking an independently sampled rally around 49976. The source tags the stroke as a reverse-slice drop and supplies no jump tag. It was labeled before either detector ran on the match.
+
+| Method on 0009 | Airborne frames detected (of 137) | False flags (of 577) | Matched events (of 13) |
+| --- | ---: | ---: | ---: |
+| Frozen verifier and boundary recovery | 127 | 9 | 12 |
+| Learned transitions | 128 | 9 | 12 |
+
+Seven of the remaining refined false flags came from a single short recovery shuffle at 40403–40409. The transition experiment adjusts existing events, so it carries through incorrect event proposals of this kind. No change to the main detection path was made.
+
+Run `refine_jump_edges.py CHECKPOINT ... --dev CACHE SOURCE --holdout CACHE SOURCE` with the same temporal ensemble used by `verify_jump_events.py`. Repeat `--dev` for 0003, 0033, 0063, 0010, 0013, and the audited 0018 cache.
