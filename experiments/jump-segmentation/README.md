@@ -180,4 +180,21 @@ The independent [FineBadminton 0009 review](labels/finebadminton-0009.csv) cover
 
 Seven of the remaining refined false flags came from a single short recovery shuffle at 40403–40409. The transition experiment adjusts existing events, so it carries through incorrect event proposals of this kind. No change to the main detection path was made.
 
+## Court-calibrated event verification
+
+This experiment adds geometric evidence to the score-only verifier for the same frozen nine-checkpoint ensemble. The court homography and two manually marked net-post tops give a projection matrix for each match. For each proposed event, the verifier compares three fits to the observed hip midpoint. The fits share linear horizontal motion and allow either linear vertical motion, fixed Earth gravity, or free vertical curvature. The shoes just outside the proposal supply soft position anchors. The verifier also measures how often at least one shoe moves slowly after projecting the shoes onto the court plane. All fits keep the same proposals and boundary recovery.
+
+In a follow-up on 0009 using six other development matches, geometry reduced false flags from 9/577 to 3/577 while both methods found 127/137 airborne frames. All six false flags from the score-only verifier on the recovery shuffle at 40404–40409 disappeared. The event count with timing tolerance fell from 12/13 to 11/13. The reduced false-positive rate was 0.52%.
+
+The independent [FineBadminton 0036 review](labels/finebadminton-0036.csv) covers 14 jumps, 125 confirmed airborne player-frames, and 538 negative frames at 25 fps. It includes clips selected from shot tags and eight sampled rally intervals. One of the additional jumps occurred during a clear that carried no jump tag. The contact review preceded scoring. All binary-labeled frames received scores. Both verifiers used the same seven development matches and selected their cutoffs from leave-one-match-out scores. [FineBadminton source release](https://huggingface.co/datasets/iLearn-Lab/Finebadminton-20K)
+
+| Verifier at its development cutoff for low false positives | Development airborne frames (of 699) | 0036 airborne frames (of 125) | 0036 false flags (of 538) | 0036 matched events (of 14) |
+| --- | ---: | ---: | ---: | ---: |
+| Score-only | 657 | 122 | 15 | 14 |
+| Scores and court geometry | 662 | 122 | 20 | 14 |
+
+The three misses were at takeoff or landing. Both verifiers flagged a nine-frame planted recovery at 61144–61152. At the development cutoff for recall, both found 124/125 airborne frames. The score-only verifier had 144 false flags and the geometry verifier had 66. A threshold sweep on 0036 put both methods at 120/125 with at most two false flags. The geometry verifier remains experimental.
+
+Run `verify_jump_geometry.py CHECKPOINT ... --dev POSE_CACHE SOURCE VIDEO --holdout POSE_CACHE SOURCE VIDEO` with the nine temporal checkpoints. Repeat `--dev` for 0003, 0033, 0063, 0010, 0013, 0018, and 0009, then use 0036 as the holdout. [Net-post tops](jump-projection-poles.json) are recorded left to right in a 960-pixel-wide reference frame.
+
 Run `refine_jump_edges.py CHECKPOINT ... --dev CACHE SOURCE --holdout CACHE SOURCE` with the same temporal ensemble used by `verify_jump_events.py`. Repeat `--dev` for 0003, 0033, 0063, 0010, 0013, and the audited 0018 cache.
