@@ -90,10 +90,10 @@ def _pretrain_centers(path, count, fps, labels, seed, *, on_court=False, groups=
     return np.unique(np.concatenate([start+candidates[start]+CENTER for start in chosen]))
 
 
-def _decode(capture, indices, destination, resize=resize_frame):
+def _source_frames(capture, indices):
     # Seek between nearby clips and decode overlapping windows only once.
     frame = None
-    for i, frame_id in enumerate(indices):
+    for frame_id in indices:
         frame_id = int(frame_id)
         if frame is None or frame_id-frame>18:
             if not capture.set(cv2.CAP_PROP_POS_FRAMES,frame_id):
@@ -106,8 +106,13 @@ def _decode(capture, indices, destination, resize=resize_frame):
         ok,bgr = capture.read()
         if not ok:
             raise ValueError(f'Cannot decode source frame {frame_id}.')
-        destination[i] = resize(bgr)
         frame = frame_id
+        yield bgr
+
+
+def _decode(capture, indices, destination, resize=resize_frame):
+    for i, bgr in enumerate(_source_frames(capture, indices)):
+        destination[i] = resize(bgr)
 
 
 def prepare(config_path, directory):

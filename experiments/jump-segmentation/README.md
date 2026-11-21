@@ -221,3 +221,22 @@ At the development cutoff chosen for recall, the expanded refit found 192/194 ho
 To reproduce the refit, start with the original ranked training command and include `--practice --soft-boundaries --ranking-weight 1 --temporal-augmentation`, the combined BWF labels with mined negatives, and the 0001 training cache. Repeat `--fit-reviewed-source POSE_CACHE SOURCE` for 0003, 0010, 0033, and 0009. For the control, omit those four sources and pass `--epochs 114`. Run `compare_pose_refit.py ENSEMBLE_DIRECTORY ... --dev POSE_CACHE SOURCE --holdout POSE_CACHE SOURCE`, repeating the development and holdout options for each match. The comparison uses each ensemble's training report to check for overlap with evaluation footage.
 
 Run `refine_jump_edges.py CHECKPOINT ... --dev CACHE SOURCE --holdout CACHE SOURCE` with the same temporal ensemble used by `verify_jump_events.py`. Repeat `--dev` for 0003, 0033, 0063, 0010, 0013, and the audited 0018 cache.
+
+## RGB evidence around the shoes
+
+A small shared convolutional encoder scores a pair of five-frame shoe clips. Each 32×24 RGB crop uses the center frame's toe and heel landmarks and scales with the player box height. The crop stays in the same image coordinates for all five frames so shoe motion relative to the local court remains visible. It includes space below the shoe for shadows. Models use the reviewed airborne labels and color, brightness, horizontal flip, and shoe masking augmentation.
+
+Three models trained on the seven FineBadminton sources already used by the expanded pose refit. The visual training set contained 652 airborne frames, 2,047 negatives, and 347 soft boundary targets. The pose ensemble and event verifier were held fixed. The comparison adds the mean shoe logit to the verified pose logit. A weight of 0.25 was selected on 0063, 0013, 0018, and 0036, where it recovered 392/402 airborne frames with eight false flags among 1,736 negatives. Pose scores alone recovered 389/402 at eight false flags.
+
+In a follow-up on 0022 and 0028, the selected visual blend recovered 186/194 airborne frames with 17/820 false flags. The pose verifier alone recovered 185/194 with 19/820 false flags. Match timing within tolerance improved from 26/29 to 27/29. At the blend's development cutoff for recall, it reached 193/194 with 47/820 false flags.
+
+[FineBadminton 0042](labels/finebadminton-0042.csv) is a separate 30 fps match between Han Yue and Wang Zhi Yi, filmed on a red court. The review was completed before scoring. It covers 17 jumps with 154 confirmed airborne frames and 599 negatives. Stroke tags and eight sampled rally intervals guided the review. Three jumps came from strokes without a jump tag. All binary-labeled frames received scores. [FineBadminton release](https://huggingface.co/datasets/iLearn-Lab/Finebadminton-20K)
+
+| Detector at its development cutoff for low false positives | 0042 airborne frames (of 154) | 0042 false flags (of 599) | Matched jumps (of 17) |
+| --- | ---: | ---: | ---: |
+| Verified pose | 144 | 10 | 14 |
+| Verified pose with RGB shoe clips | 148 | 17 | 14 |
+
+Six of the extra false flags came from a slight foot lift around a slice drop at 83253–83258. At its recall cutoff, the blend reached 153/154 with 93 false flags. A cutoff sweep on 0042 required 36 false flags to retain that recall and recovered 36/154 with at most two false flags. The visual blend remains experimental.
+
+Use `prepare_shoe_rgb.py POSE_NPZ VIDEO VISUAL_CACHE/SOURCE.npz` to extract the shoe clips. Run `compare_shoe_rgb.py train VISUAL_CACHE OUTPUT --source POSE_CACHE SOURCE LABEL_SPLIT` for the seven pose-training sources 0001, 0057, 0070, 0003, 0010, 0033, and 0009. Use the split stored in each source's label CSV. Pass the output directory and the expanded pose checkpoint directory to `compare_shoe_rgb.py compare VISUAL_CACHE VISUAL_MODELS POSE_MODELS --dev POSE_CACHE SOURCE --holdout POSE_CACHE SOURCE`, repeating the match arguments.
