@@ -96,6 +96,14 @@ To try the same classifier on a single player, build a crop cache from the RGB c
 
 The pose masking experiment accepts `--regions body --bone-weight .5` to reconstruct both masked landmarks and vectors between connected joints.
 
+Evaluate a saved RGB checkpoint on a separately prepared, validation-only cache. Use a crop cache for a per-player checkpoint.
+
+```bash
+.venv/bin/python -m badminton_analysis.train_rgb_mgmae evaluate HOLDOUT_CACHE MODEL.pt
+```
+
 ### Jump benchmark
 
 The benchmark reports strict frame recall and false-positive rate alongside one-to-one event recall. On 30 fps footage, a reference event up to six frames long allows one frame of error at either boundary. Longer reference events allow two frames. Convert these allowances to the source frame rate. Explicitly uncertain boundary frames widen the reference interval and are excluded from the frame metrics. Grounded frames and negligible split steps count as negatives at every scored frame.
+
+See [experiment results and reviewed labels](experiments/jump-segmentation/README.md) for the cross-match comparison.

@@ -160,20 +160,10 @@ def augment_windows(windows, *, perturb_landmarks=True):
     return result
 
 
-def train(run, labels_path, output, *, epochs=40, seed=7, augment=True,
-          perturb_landmarks=True, initial_weights=None):
+def fit_classifier(model, x, y, hard_train, *, epochs, augment=True, perturb_landmarks=True):
+    """Fit a classifier using reviewed pose windows and weighted hard negatives."""
     if epochs < 1:
         raise ValueError('Use at least one training epoch.')
-    torch.manual_seed(seed)
-    torch.set_num_threads(1)
-    store = ObservationStore.open(run)
-    sequence = collect_player_poses(store, store.load_calibration()['H_court_to_image'])
-    labels, split, hard = load_labels(labels_path, sequence.frame_ids)
-    x, y, hard_train, _ = _examples(sequence, labels, split, hard, 'train')
-    validation = _examples(sequence, labels, split, hard, 'validation')
-    model = JumpSegmenter()
-    if initial_weights is not None:
-        model.load_state_dict(initial_weights)
     optimizer = torch.optim.AdamW(model.parameters(), lr=.001, weight_decay=.01)
     criterion = torch.nn.BCEWithLogitsLoss()
     weights = torch.ones_like(y)
@@ -194,6 +184,24 @@ def train(run, labels_path, output, *, epochs=40, seed=7, augment=True,
             loss = criterion(model(batch), y[index])
             loss.backward()
             optimizer.step()
+
+
+def train(run, labels_path, output, *, epochs=40, seed=7, augment=True,
+          perturb_landmarks=True, initial_weights=None):
+    if epochs < 1:
+        raise ValueError('Use at least one training epoch.')
+    torch.manual_seed(seed)
+    torch.set_num_threads(1)
+    store = ObservationStore.open(run)
+    sequence = collect_player_poses(store, store.load_calibration()['H_court_to_image'])
+    labels, split, hard = load_labels(labels_path, sequence.frame_ids)
+    x, y, hard_train, _ = _examples(sequence, labels, split, hard, 'train')
+    validation = _examples(sequence, labels, split, hard, 'validation')
+    model = JumpSegmenter()
+    if initial_weights is not None:
+        model.load_state_dict(initial_weights)
+    fit_classifier(model,x,y,hard_train,epochs=epochs,augment=augment,
+                   perturb_landmarks=perturb_landmarks)
     report = _evaluate(model, sequence, validation, labels, split, store.manifest['fps'])
     report.update(train_frames=len(y), train_airborne_frames=int(y.sum()),
                   raw_run_id=store.run_id, augmentation=augment,

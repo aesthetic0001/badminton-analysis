@@ -66,8 +66,17 @@ def _pretrain_centers(path, count, fps, labels, seed, *, on_court=False, groups=
     else:
         rallies = json.loads(path.read_text())
         intervals = [(r['start_frame'],r['end_frame']+1) for r in rallies]
-    starts = np.unique(np.concatenate([np.arange(max(0,start),min(count,stop)-end+1,end)
-                                      for start,stop in intervals]))
+    candidates = {}
+    for start, stop in intervals:
+        start, stop = max(0,start), min(count,stop)
+        if stop-start < FRAMES:
+            continue
+        if stop-start < end:
+            candidates.setdefault(start,offsets[offsets+FRAMES <= stop-start])
+        else:
+            for group_start in range(start,stop-end+1,end):
+                candidates[group_start] = offsets
+    starts = np.array(sorted(candidates),dtype=int)
     if labels['validation']:
         val = np.array(sorted(labels['validation']))
         pad = round(30*fps)
@@ -78,7 +87,7 @@ def _pretrain_centers(path, count, fps, labels, seed, *, on_court=False, groups=
         raise ValueError('No pretraining windows remain outside validation.')
     rng = np.random.default_rng(seed)
     chosen = rng.choice(starts,size=min(groups,len(starts)),replace=False)
-    return np.unique((chosen[:,None]+offsets+CENTER).ravel())
+    return np.unique(np.concatenate([start+candidates[start]+CENTER for start in chosen]))
 
 
 def _decode(capture, indices, destination, resize=resize_frame):
@@ -278,7 +287,7 @@ def _train_classifier(model,sources,epochs,seed):
     return {'positive_player_frames':positives,'negative_player_frames':negatives,'clips':len(videos)}
 
 
-def _evaluate(model,source):
+def _evaluate(model,source,threshold=.5):
     indices = source.data['validation_index']
     if not len(indices):
         return None
@@ -290,7 +299,7 @@ def _evaluate(model,source):
             scores[available] = torch.cat([model(source.clips(group)).sigmoid() for group in np.array_split(
                 indices[available],int(np.ceil(available.sum()/8)))]).numpy()
     frames = source.data['centers'][indices]
-    predictions = scores>=.5
+    predictions = scores>=threshold
     pos,neg = labels==1,labels==0
     # Keep reviewed spans on the source timeline, including uncertain boundary frames.
     expanded = np.full((frames[-1]-frames[0]+1,labels.shape[1]),np.nan)
@@ -298,7 +307,7 @@ def _evaluate(model,source):
     references = np.zeros_like(expanded)
     references[frames-frames[0]] = pos
     truth = list(jump_segments(references))
-    found = list(jump_segments(expanded))
+    found = list(jump_segments(expanded,threshold))
     pairs = sorted(((min(e,re)-max(s,rs),i,j) for i,(p,s,e) in enumerate(found)
                     for j,(rp,rs,re) in enumerate(truth) if p==rp and min(e,re)>max(s,rs)),reverse=True)
     used,matched = set(),set()
@@ -312,7 +321,25 @@ def _evaluate(model,source):
             'airborne_frames':int(pos.sum()),'false_positive_frames':int((predictions&neg).sum()),
             'negative_frames':int(neg.sum()),'matched_events':len(matched),'reference_events':len(truth),
             'predicted_events_in_reviewed_intervals':len(found),
-            'benchmark':evaluate_jump_scores(frame_targets,expanded,fps=float(source.data.get('fps',30)))}
+            'benchmark':evaluate_jump_scores(frame_targets,expanded,fps=float(source.data.get('fps',30)),
+                                             threshold=threshold)}
+
+
+def _load_sources(directory):
+    return [_Source(directory,name) for name in json.loads((directory/'sources.json').read_text())]
+
+
+def evaluate(directory,checkpoint,threshold=.5):
+    """Evaluate a checkpoint on a separate cache of reviewed footage."""
+    torch.set_num_threads(3)
+    sources = _load_sources(Path(directory))
+    model = RGBJumpSegmenter(players=sources[0].data['validation_labels'].shape[1])
+    model.load_state_dict(torch.load(checkpoint,map_location='cpu',weights_only=True))
+    model.eval()
+    validation = [report for source in sources if (report := _evaluate(model,source,threshold)) is not None]
+    if not validation:
+        raise ValueError('No validation labels in the evaluation cache.')
+    return validation
 
 
 def train(directory,output, *, pretrain_epochs=6,epochs=14,seed=7):
@@ -324,7 +351,7 @@ def train(directory,output, *, pretrain_epochs=6,epochs=14,seed=7):
         raise ValueError('Epochs must be positive, with zero allowed for pretraining.')
     torch.set_num_threads(3)
     torch.manual_seed(seed)
-    sources = [_Source(directory,name) for name in json.loads((directory/'sources.json').read_text())]
+    sources = _load_sources(directory)
     players = sources[0].data['train_labels'].shape[1]
     model = RGBJumpSegmenter(players=players)
     pretrain_loss = _pretrain(model,sources,pretrain_epochs,seed) if pretrain_epochs else []
@@ -356,11 +383,17 @@ def main():
     fit.add_argument('--pretrain-epochs',type=int,default=6)
     fit.add_argument('--epochs',type=int,default=14)
     fit.add_argument('--seed',type=int,default=7)
+    score = sub.add_parser('evaluate',help='Evaluate a checkpoint on reviewed footage.')
+    score.add_argument('cache',type=Path)
+    score.add_argument('checkpoint',type=Path)
+    score.add_argument('--threshold',type=float,default=.5)
     args = parser.parse_args()
     if args.command=='prepare':
         prepare(args.config,args.cache)
-    else:
+    elif args.command=='train':
         train(args.cache,args.output,pretrain_epochs=args.pretrain_epochs,epochs=args.epochs,seed=args.seed)
+    else:
+        print(json.dumps(evaluate(args.cache,args.checkpoint,args.threshold),indent=2)+'\n')
 
 
 if __name__ == '__main__':
