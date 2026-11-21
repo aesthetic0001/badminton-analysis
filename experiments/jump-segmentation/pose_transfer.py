@@ -82,7 +82,8 @@ def training_samples(example):
     return windows[known],torch.tensor(labels[index][known],dtype=torch.float32),torch.from_numpy(hard[index][known])
 
 
-def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=False,bwf_labels=None):
+def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=False,
+        bwf_labels=None,ranking_weight=0.):
     torch.set_num_threads(1)
     store = ObservationStore.open(bwf_run)
     sequence = collect_player_poses(store,store.load_calibration()['H_court_to_image'])
@@ -111,13 +112,13 @@ def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=F
                 weights = torch.load(pilot/method/f'motion-{seed}.pt',weights_only=True,map_location='cpu')
                 model.load_state_dict(weights)
                 initial = score(model,holdout)
-            fit_classifier(model,*train,epochs=40)
+            fit_classifier(model,*train,epochs=40,ranking_weight=ranking_weight)
             results.append({'model':method,'seed':seed,'initial':initial,'fine_tuned':score(model,holdout)})
             torch.save(model.state_dict(),output/f'{method}-{seed}.pt')
     report = {'train_sources':['bwf-pilot',*names],'positive_training_frames':int((train[1]==1).sum()),
               'negative_training_frames':int((train[1]==0).sum()),
               'soft_boundary_frames':int(((train[1]>0)&(train[1]<1)).sum()),
-              'holdout':'finebadminton-0063','results':results}
+              'ranking_weight':ranking_weight,'holdout':'finebadminton-0063','results':results}
     (output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))
 
@@ -131,12 +132,15 @@ def main():
     parser.add_argument('--practice',action='store_true')
     parser.add_argument('--extra-source',action='append',nargs=2,default=[],metavar=('CACHE','SOURCE'))
     parser.add_argument('--bwf-labels',type=Path,help='Use a different reviewed BWF label CSV.')
+    parser.add_argument('--ranking-weight',type=float,default=0.,
+                        help='Penalize high negative logits that outrank low positive logits.')
     parser.add_argument('--soft-boundaries',action='store_true',
                         help='Supervise ambiguous takeoff and landing intervals with soft targets.')
     args = parser.parse_args()
     extra = [(Path(path),source) for path,source in args.extra_source]
     run(args.pose_cache,args.pilot,args.bwf_run,args.output,practice=args.practice,
-        extra_sources=extra,soft_boundaries=args.soft_boundaries,bwf_labels=args.bwf_labels)
+        extra_sources=extra,soft_boundaries=args.soft_boundaries,bwf_labels=args.bwf_labels,
+        ranking_weight=args.ranking_weight)
 
 
 if __name__ == '__main__':

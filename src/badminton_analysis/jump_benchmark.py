@@ -66,7 +66,7 @@ def evaluate_jump_scores(targets, scores, *, fps, threshold=.5):
     Targets are -2 for unreviewed, -1 for uncertain, 0 for no correction, and
     1 for a jump requiring correction. Missing scores are counted explicitly.
     """
-    targets,scores = np.asarray(targets),np.asarray(scores)
+    targets,scores = np.asarray(targets),np.asarray(scores,dtype=float)
     if (targets.ndim != 2 or targets.shape != scores.shape or not math.isfinite(fps)
             or fps <= 0 or not 0 <= threshold <= 1 or not np.isin(targets,[-2,-1,0,1]).all()):
         raise ValueError('Use aligned (frame, player) targets and scores, a valid fps and threshold.')
@@ -97,4 +97,31 @@ def evaluate_jump_scores(targets, scores, *, fps, threshold=.5):
         'predicted_events': len(predictions),
         'matched_events_with_tolerance': matched,
         'event_recall_with_tolerance': matched/len(reference) if reference else None,
+    }
+
+
+def jump_operating_points(positive_scores,negative_scores,*,recall_target=.99,fp_target=.005):
+    """Find the cutoffs at the frame targets. Choose cutoffs on development footage."""
+    positive = np.asarray(positive_scores,dtype=float).ravel()
+    negative = np.asarray(negative_scores,dtype=float).ravel()
+    if not 0 < recall_target <= 1 or not 0 < fp_target <= 1:
+        raise ValueError('Recall and false-positive targets must be in (0, 1].')
+    if any(np.any((scores<0)|(scores>1)) for scores in (positive,negative)):
+        raise ValueError('Scores must be probabilities or NaN.')
+    # Unscored positives are misses. Compute FPR on scored negatives and report coverage.
+    negative = np.sort(negative[np.isfinite(negative)])
+    if not len(positive) or not len(negative):
+        raise ValueError('Operating points need positives and scored negatives.')
+    positive = np.sort(np.nan_to_num(positive,nan=-1.))
+    allowed = math.ceil(fp_target*len(negative))-1
+    # The score threshold is inclusive. Move above the entire tied score group.
+    specificity = float(np.nextafter(negative[-1-allowed],np.inf))
+    sensitivity = float(positive[-math.ceil(recall_target*len(positive))])
+    return {
+        'specificity_threshold':specificity if specificity<=1 else None,
+        'recall_threshold':sensitivity if sensitivity>=0 else None,
+        'true_positive_at_fp_limit':int((positive>=specificity).sum()) if specificity<=1 else None,
+        'false_positive_at_recall_target':int((negative>=sensitivity).sum()) if sensitivity>=0 else None,
+        'positive_frames':len(positive),
+        'scored_negative_frames':len(negative),
     }

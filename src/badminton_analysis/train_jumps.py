@@ -160,10 +160,13 @@ def augment_windows(windows, *, perturb_landmarks=True):
     return result
 
 
-def fit_classifier(model, x, y, hard_train, *, epochs, augment=True, perturb_landmarks=True):
+def fit_classifier(model, x, y, hard_train, *, epochs, augment=True, perturb_landmarks=True,
+                   ranking_weight=0.):
     """Fit a classifier using reviewed pose windows and weighted hard negatives."""
     if epochs < 1:
         raise ValueError('Use at least one training epoch.')
+    if not np.isfinite(ranking_weight) or ranking_weight<0:
+        raise ValueError('Use a finite, nonnegative ranking weight.')
     optimizer = torch.optim.AdamW(model.parameters(), lr=.001, weight_decay=.01)
     criterion = torch.nn.BCEWithLogitsLoss()
     weights = torch.ones_like(y)
@@ -181,7 +184,18 @@ def fit_classifier(model, x, y, hard_train, *, epochs, augment=True, perturb_lan
         for index in torch.multinomial(sampling, len(y), replacement=True).split(64):
             optimizer.zero_grad()
             batch = augment_windows(x[index], perturb_landmarks=perturb_landmarks) if augment else x[index]
-            loss = criterion(model(batch), y[index])
+            targets = y[index]
+            logits = model(batch)
+            loss = criterion(logits,targets)
+            if ranking_weight and epoch>=epochs//2:
+                negatives = logits[targets==0]
+                positives = logits[targets==1]
+                if len(negatives) and len(positives):
+                    highest = negatives.topk(min(4,len(negatives))).values
+                    lowest = positives.topk(min(4,len(positives)),largest=False).values
+                    loss = loss+ranking_weight*torch.nn.functional.softplus(
+                        highest[:,None]-lowest[None,:]+1
+                    ).mean()
             loss.backward()
             optimizer.step()
 

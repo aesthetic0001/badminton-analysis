@@ -99,3 +99,25 @@ To evaluate the decoder, add `--decode .98 .30 .50` to the `score_pose.py` comma
 A follow-up run added [67 hard-negative frames](labels/bwf-mined-negatives.csv) from nine short, high-confidence model predictions in the BWF training match. Review confirmed planted lunges, strides, and negligible shuffles. At 0.5, mean false flags fell from 23.7 to 16.4 across the nine runs with soft boundaries. Mean airborne frames detected fell from 125.4 to 119.3. One run recorded 112/130 airborne frames with zero false flags. The holdout threshold diagnostic improved to 122/130 airborne frames with at most two false flags. At 99% recall, the lowest false-positive count among the new runs was 24/509.
 
 To reproduce this follow-up, append the mined intervals to the existing BWF training label CSV and pass the new file with `--bwf-labels`. Keep the BWF validation rows in the combined CSV.
+
+## Shoe motion and a ranking loss
+
+[FineBadminton 0010](labels/finebadminton-0010.csv) provides seven jump events, 42 airborne frames, and 505 negative player-frames. It includes 365 negative frames from eight randomly sampled sections of ordinary play. The pose classifiers and shoe-motion classifiers in this comparison were fitted using other matches. Development cutoffs used 0003, 0033, and 0063.
+
+The shoe experiment measures motion of textured points in small regions around the toe and heel landmarks. It tracks points in both directions, rejects inconsistent tracks, and expresses speed relative to player height. The comparison fits the same regularized logistic model with pose scores alone or with the extra shoe features. At each model's development cutoff for low false positives, pose alone detected 39/42 frames with 4/505 false flags. Adding shoe motion detected 39/42 with 5/505 false flags. Both matched all seven events. A sweep on 0010 found 24/505 false flags at full recall with shoe motion and 37/505 with pose alone. That sweep measures score ordering on 0010.
+
+The ranking experiment adds a loss after the first 20 training epochs. It compares the four highest negative scores with the four lowest positive scores in each batch and penalizes pairs with less than a one-logit margin. It keeps binary cross-entropy as the main loss. Uncertain soft labels still contribute to binary cross-entropy.
+
+| Ranking weight | Development-selected checkpoint | Development recall with at most 3/756 false flags | Held-out recall at the same cutoff | Held-out false flags | Matched events |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 0 | Body masking, seed 17 | 254/292 | 39/42 | 13/505 | 7/7 |
+| 0.2 | Body masking, seed 7 | 271/292 | 40/42 | 22/505 | 7/7 |
+| 1.0 | Body masking, seed 7 | 278/292 | 42/42 | 15/505 | 7/7 |
+
+On 0010, a diagnostic sweep after training reduced the fewest false flags required for full recall across the nine runs from 21 at ranking weight 0 to 13 at ranking weight 1. The best recall at the 0.5% false-positive limit rose from 36/42 to 39/42. The remaining high scores cluster on lunges, approach steps, and shuffles.
+
+Use `pose_transfer.py --ranking-weight 1` with the earlier hard-negative and soft-boundary options to reproduce the ranking run. Pass each development cache and source name as `--development POSE_CACHE SOURCE` to `score_pose.py` to choose cutoffs before scoring the holdout. The CLI reports both the transferred cutoff and the holdout diagnostic.
+
+Extract shoe features with `shoe_motion.py POSE_NPZ VIDEO FLOW_CACHE/SOURCE.npz`. Pass trained pose checkpoints to `score_shoe_contact.py FLOW_CACHE CHECKPOINT ... --dev POSE_CACHE SOURCE --holdout POSE_CACHE SOURCE`. Repeat `--dev` for each development match. The shoe comparison used the soft-boundary scratch seed 27 and the mined-negative body-masking seed 17 checkpoints.
+
+The next run added 144 no-correction player-frames from 15 reviewed net-play windows in [0001](labels/finebadminton-0001-net.csv), [0057](labels/finebadminton-0057-net.csv), and [0070](labels/finebadminton-0070-net.csv). A frozen ranked checkpoint scored 73 clips around net shots and lifts so review could prioritize high-scoring lunges and shuffles. The added training examples did not improve the selected operating point. Its best development recall was 269/292 at three false flags, and that checkpoint transferred to 40/42 frames and 34/505 false flags. The ranked model trained on the earlier data remains the best of these development-selected runs at full recall on 0010.
