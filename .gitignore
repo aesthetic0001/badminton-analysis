@@ -2,6 +2,7 @@ yolo26m*.pt
 .venv/
 .cache/
 data/player-position-heatmap/
+data/jump-segmentation/
 datasets/
 badminton/
 __pycache__/

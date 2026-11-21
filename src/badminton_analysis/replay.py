@@ -82,7 +82,8 @@ class _ReplayView:
     def court_pixel(self, xy):
         return tuple(np.rint(self.origin + np.asarray(xy)*[self.scale, -self.scale]).astype(int))
 
-    def render(self, image, frame_id, fps, court_score, points, eligible, accepted, shuttle):
+    def render(self, image, frame_id, fps, court_score, points, eligible, accepted, shuttle,
+               reconstructed=(False, False)):
         canvas = self.base.copy()
         camera = image.copy()
         court_ok = court_score >= self.settings['court_min_score']
@@ -134,7 +135,11 @@ class _ReplayView:
                 cv2.drawMarker(canvas, xy, player_colour, cv2.MARKER_TILTED_CROSS, 13, 2)
             pixel = cv2.perspectiveTransform(np.asarray(point, float)[None, None], self.homography)[0, 0]
             pixel = tuple(np.rint(pixel).astype(int))
-            cv2.circle(camera, pixel, 6, player_colour, 2, cv2.LINE_AA)
+            if reconstructed[slot]:
+                cv2.drawMarker(camera, pixel, player_colour, cv2.MARKER_DIAMOND, 15, 2)
+                _text(camera, 'Jump fit', (pixel[0] + 9, pixel[1] - 7), player_colour)
+            else:
+                cv2.circle(camera, pixel, 6, player_colour, 2, cv2.LINE_AA)
         if np.isfinite(shuttle).all():
             cv2.circle(camera, tuple(np.rint(shuttle).astype(int)), 7, (220, 60, 240), 2, cv2.LINE_AA)
         canvas[self.header:, :self.width] = camera
@@ -167,6 +172,8 @@ def render_position_replay(run_directory, analysis_directory=None, output=None, 
         raise ValueError('The analysis belongs to a different raw run.')
     with np.load(analysis_directory / 'analysis.npz', allow_pickle=False) as data:
         ids, eligible, accepted = (data[key] for key in ['frame_ids', 'eligible', 'accepted'])
+        jump_xyz = data['jump_xyz_m'] if 'jump_xyz_m' in data else None
+        jump_probabilities = data['jump_probabilities'] if jump_xyz is not None else None
     expected = np.arange(store.manifest['first_frame_id'], store.manifest['stop_frame_id'])
     if not np.array_equal(ids, expected):
         raise ValueError('Analysis must cover the complete raw frame interval in order.')
@@ -211,9 +218,15 @@ def render_position_replay(run_directory, analysis_directory=None, output=None, 
                     if not ok:
                         raise ValueError(f'Video decoding failed at source frame {frame_id}.')
                     image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+                    reconstructed = (False, False)
+                    frame_points = points[offset]
+                    if jump_xyz is not None:
+                        airborne = jump_probabilities[rendered] >= settings['jumps']['threshold']
+                        frame_points[airborne] = jump_xyz[rendered, airborne, :2]
+                        reconstructed = np.isfinite(jump_xyz[rendered]).all(axis=1)
                     frame = view.render(image, int(frame_id), fps, chunk['court_scores'][offset],
-                                        points[offset], eligible[rendered], accepted[rendered],
-                                        chunk['shuttle_pixels'][offset])
+                                        frame_points, eligible[rendered], accepted[rendered],
+                                        chunk['shuttle_pixels'][offset], reconstructed)
                     if rendered == preview_frame:
                         cv2.imwrite(str(output.with_suffix('.jpg')), frame)
                     process.stdin.write(frame.tobytes())
