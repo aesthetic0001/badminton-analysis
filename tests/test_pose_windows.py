@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from badminton_analysis.jumps import HALF_WINDOW, LANDMARKS, PoseSequence, pose_windows
+from badminton_analysis.train_jumps import airborne_boundary_frames
 
 
 class PoseWindowTest(unittest.TestCase):
@@ -27,3 +28,9 @@ class PoseWindowTest(unittest.TestCase):
         self.assertTrue(subsampled[0,HALF_WINDOW-1,-1])
         self.assertFalse(subsampled[0,HALF_WINDOW-2,-1])
         self.assertFalse(subsampled[1].any())
+
+    def test_boundary_training_weights_use_verified_frame_edges(self):
+        targets = np.array([0,-1,1,1,1,1,1,1,1,-1,0,1,1,0])[:,None]
+        index = (np.arange(len(targets)),np.zeros(len(targets),dtype=int))
+        selected = np.flatnonzero(airborne_boundary_frames(targets,index))
+        np.testing.assert_array_equal(selected,[2,3,7,8,11,12])

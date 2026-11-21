@@ -15,7 +15,7 @@ from badminton_analysis.jumps import (
 from badminton_analysis.observation_store import ObservationStore
 
 
-def load_labels(path, frame_ids):
+def load_labels(path,frame_ids,*,train_context=HALF_WINDOW):
     """Read exclusive-stop intervals. Unknown and unreviewed frames are unlabelled."""
     labels = np.full((len(frame_ids), 2), -1, dtype=np.int8)
     split = np.full(labels.shape, '', dtype='<U10')
@@ -45,12 +45,31 @@ def load_labels(path, frame_ids):
         raise ValueError('Training and validation labels share source frames.')
     combined = np.sort(np.r_[train, validation])
     same_partition = (split[combined] == 'train').any(axis=1)
-    if np.any(np.diff(combined)[np.diff(same_partition)] <= 2 * HALF_WINDOW):
+    if np.any(np.diff(combined)[np.diff(same_partition)] <= HALF_WINDOW+train_context):
         raise ValueError('Training and validation windows have overlapping context.')
     return labels, split, hard
 
 
-def _examples(sequence, labels, split, hard, partition):
+def temporal_views(sequence,index,nominal,steps):
+    """Build additional temporal views, preserving the original target frame."""
+    windows = [nominal]
+    for step in steps:
+        timed = pose_windows(sequence,*index,frame_step=step)
+        usable = timed[..., -1].any(axis=1)
+        windows.append(np.where(usable[:,None,None],timed,nominal))
+    return np.stack(windows,axis=1)
+
+
+def airborne_boundary_frames(targets,index):
+    """Find the first and last two verified airborne frames in training events."""
+    frames,players = index
+    neighbors = frames[:,None]+np.array([-2,-1,1,2])
+    available = (neighbors>=0)&(neighbors<len(targets))
+    airborne = targets[neighbors.clip(0,len(targets)-1),players[:,None]]==1
+    return (targets[index]==1)&~(available&airborne).all(axis=1)
+
+
+def _examples(sequence,labels,split,hard,partition,*,frame_steps=()):
     frames, players = np.nonzero((labels >= 0) & (split == partition))
     windows = pose_windows(sequence, frames, players)
     available = windows[..., -1].any(axis=1)
@@ -58,7 +77,10 @@ def _examples(sequence, labels, split, hard, partition):
     targets = labels[index]
     if set(targets) != {0, 1}:
         raise ValueError(f'{partition} needs examples of both contact states.')
-    return (torch.from_numpy(windows[available]), torch.from_numpy(targets.astype(np.float32)),
+    windows = windows[available]
+    if frame_steps:
+        windows = temporal_views(sequence,index,windows,frame_steps)
+    return (torch.from_numpy(windows), torch.from_numpy(targets.astype(np.float32)),
             torch.from_numpy(hard[index]), index)
 
 
@@ -161,17 +183,23 @@ def augment_windows(windows, *, perturb_landmarks=True):
 
 
 def fit_classifier(model, x, y, hard_train, *, epochs, augment=True, perturb_landmarks=True,
-                   ranking_weight=0.):
+                   ranking_weight=0.,positive_weights=None):
     """Fit a classifier using reviewed pose windows and weighted hard negatives."""
     if epochs < 1:
         raise ValueError('Use at least one training epoch.')
     if not np.isfinite(ranking_weight) or ranking_weight<0:
         raise ValueError('Use a finite, nonnegative ranking weight.')
+    views = x if x.ndim==4 else None
+    if views is not None:
+        x = views[:,0]
     optimizer = torch.optim.AdamW(model.parameters(), lr=.001, weight_decay=.01)
     criterion = torch.nn.BCEWithLogitsLoss()
     weights = torch.ones_like(y)
     weights[hard_train] = 2
-    weights[y == 1] = weights[y == 0].sum() / (y == 1).sum()
+    positive = y==1
+    if positive_weights is not None:
+        weights[positive] = positive_weights[positive]
+    weights[positive] *= weights[y==0].sum()/weights[positive].sum()
     for epoch in range(epochs):
         sampling = weights.clone()
         if epoch >= epochs//2 and epoch > 0:
@@ -183,7 +211,13 @@ def fit_classifier(model, x, y, hard_train, *, epochs, augment=True, perturb_lan
         model.train()
         for index in torch.multinomial(sampling, len(y), replacement=True).split(64):
             optimizer.zero_grad()
-            batch = augment_windows(x[index], perturb_landmarks=perturb_landmarks) if augment else x[index]
+            if views is not None:
+                view = torch.randint(views.shape[1],(len(index),))
+                batch = views[index,view]
+            else:
+                batch = x[index]
+            if augment:
+                batch = augment_windows(batch,perturb_landmarks=perturb_landmarks)
             targets = y[index]
             logits = model(batch)
             loss = criterion(logits,targets)

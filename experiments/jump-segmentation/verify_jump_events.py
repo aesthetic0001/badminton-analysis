@@ -15,6 +15,16 @@ from badminton_analysis.jumps import JumpSegmenter, jump_segments, predict_airbo
 from pose_transfer import load_examples, load_sequence, pose_cache_fps
 
 
+class JumpEnsemble(torch.nn.Module):
+    """Average the logits of pose checkpoints on the same input windows."""
+    def __init__(self,models):
+        super().__init__()
+        self.models = torch.nn.ModuleList(models)
+
+    def forward(self,windows):
+        return torch.stack([model(windows) for model in self.models]).mean(0)
+
+
 def load_source(cache,source,model,window_fps=None):
     target = load_examples(cache,source,'validation')[0]
     sequence = load_sequence(cache,source)
@@ -127,7 +137,7 @@ def compare(development,holdout,proposal,penalty,weight,extension,*,recover=Fals
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('checkpoint',type=Path)
+    parser.add_argument('checkpoints',type=Path,nargs='+')
     parser.add_argument('--dev',action='append',nargs=2,required=True,metavar=('POSE_CACHE','SOURCE'))
     parser.add_argument('--holdout',nargs=2,required=True,metavar=('POSE_CACHE','SOURCE'))
     parser.add_argument('--window-fps',type=float,
@@ -139,11 +149,16 @@ def main():
     if args.window_fps is not None and (not np.isfinite(args.window_fps) or args.window_fps<=0):
         parser.error('Use a positive finite model frame rate.')
     torch.set_num_threads(1)
-    model = JumpSegmenter()
-    model.load_state_dict(torch.load(args.checkpoint,weights_only=True,map_location='cpu'))
+    models = []
+    for checkpoint in args.checkpoints:
+        model = JumpSegmenter()
+        model.load_state_dict(torch.load(checkpoint,weights_only=True,map_location='cpu'))
+        models.append(model)
+    model = models[0] if len(models)==1 else JumpEnsemble(models)
     development = [load_source(Path(cache),name,model,args.window_fps) for cache,name in args.dev]
     holdout = load_source(Path(args.holdout[0]),args.holdout[1],model,args.window_fps)
     result = {'development':names,'holdout':args.holdout[1],'holdout_fps':holdout[2],
+              'checkpoints':[str(path) for path in args.checkpoints],
               'window_fps':args.window_fps,
               'pose_only':report(development,[row[1] for row in development],holdout,holdout[1]),
               'higher_weight':compare(development,holdout,.58,8.,4.,0),

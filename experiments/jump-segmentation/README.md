@@ -141,3 +141,21 @@ On the earlier BWF match, the higher-weight verifier retained 20/21 airborne fra
 For pose-only sources, run `prepare_pose.py POSE_CACHE --sources SOURCES.json --pose-model RTMPOSE_WHOLEBODY.onnx --court-reference-frames court-reference-frames.json`. The manifest lists each video and label CSV. This preserves the native timing and bypasses the RGB pilot’s 30 fps preparation restriction. Run `verify_jump_events.py CHECKPOINT --dev CACHE SOURCE --holdout CACHE SOURCE`, repeating `--dev` for 0003, 0033, 0063, and 0010. Pass `--window-fps 30` for the cadence comparison.
 
 A boundary follow-up required the original pose score to stay at or above 0.4 over a contiguous path before transferring verifier confidence by up to two frames before a jump and one frame after it at 30 fps. This setting was selected on the four development matches. Among other settings with 320/334 positives at the development false-positive limit, it needed the fewest false flags to reach the development recall target. Rechecking 0013 yielded 102/106 airborne frames, 1/555 false flags, and 12/12 matched jumps at the development cutoff for low false positives. This is a follow-up on the same match. On BWF it recovered both frames of the short hop, rejected the negligible split step, and scored 21/21 airborne frames with 7/69 false flags.
+
+## Ensemble and boundary-weighted training
+
+Three of the four remaining strict misses on 0013 scored below 0.5 in all nine ranked pose checkpoints. Averaging checkpoint logits therefore had limited scope to recover them. A separate training run sampled each labeled pose window at frame-spacing factors of 0.8, 1.0, and 1.25 with the same center target. It selected one of those views per sampled example and kept the number of updates per epoch fixed. Another run tripled the sampling weight of the first and last two confirmed airborne frames within positive examples. Both kept the ranking loss.
+
+The development set for this experiment includes 0003, 0033, 0063, 0010, and 0013. At the development false-positive limit, the strongest single checkpoint with boundary recovery scored 424/440 airborne frames. The best of six ensemble groupings scored 418/440 and used all nine checkpoints trained with temporal augmentation. The best boundary-weighted checkpoint scored 416/440. Its selection used development results only.
+
+[FineBadminton 0018](labels/finebadminton-0018.csv) supplied an independent match averaging 24.63 fps. The original review had 12 jumps, 116 positive frames, and 573 negative frames. The ensemble and boundary recovery detected 112 of those 116 frames and flagged four negative frames. The four flags were consecutive far-player frames at 52913–52916. Frame-by-frame review showed both shoes above the court during an attacking clear. The upstream stroke tag did not call it a jump. The audited label adds the verified airborne interval at 52911–52917 and its context. The rescore kept the original 798 pose observations, appended 11 frames to cover the extended review, and froze all models and thresholds.
+
+| Model with boundary recovery | Airborne frames on audited 0018 (of 122) | False flags (of 574) | Matched events (of 13) |
+| --- | ---: | ---: | ---: |
+| Single ranked checkpoint | 115 | 0 | 13 |
+| Nine checkpoints with temporal augmentation | 118 | 0 | 13 |
+| Boundary-weighted checkpoint | 117 | 0 | 13 |
+
+All three rows use cutoffs selected on the five development matches. At its development cutoff for higher recall, the ensemble scored 121/122 with 11 false flags. The boundary-weighted model scored 122/122 with 15 false flags. The best diagnostic sweep under the false-positive limit on audited 0018 recovered 120/122. That cutoff needs a separate evaluation. The strict frame targets remain unmet at a common verified operating point.
+
+Add `--temporal-augmentation` or `--boundary-weight 3` to the ranked training command for these variants. Pass all nine checkpoint paths before the `--dev` arguments to `verify_jump_events.py` to reproduce logit averaging.
