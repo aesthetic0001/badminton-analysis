@@ -197,4 +197,27 @@ The three misses were at takeoff or landing. Both verifiers flagged a nine-frame
 
 Run `verify_jump_geometry.py CHECKPOINT ... --dev POSE_CACHE SOURCE VIDEO --holdout POSE_CACHE SOURCE VIDEO` with the nine temporal checkpoints. Repeat `--dev` for 0003, 0033, 0063, 0010, 0013, 0018, and 0009, then use 0036 as the holdout. [Net-post tops](jump-projection-poles.json) are recorded left to right in a 960-pixel-wide reference frame.
 
+## Training on four previously reviewed matches
+
+The nine-model temporal ensemble was refit with the reviewed frames from 0003, 0010, 0033, and 0009. This increased confirmed airborne training frames from 362 to 784 and confirmed negatives from 713 to 2,482. The earlier recovery shuffle on 0009 is flagged as a hard negative. The fit kept the original checkpoint initializations, ranking loss, boundary targets, and temporal augmentation. The control trained on the original data for 114 epochs, giving each model the same 2,280 optimizer updates as 40 epochs on the expanded data.
+
+Each ensemble uses the same score-only verification and boundary recovery procedure. Its cutoff is chosen from leave-one-match-out scores on 0063, 0013, 0018, and 0036. The two new women's singles matches were excluded from model fitting, verifier fitting, and cutoff selection. Contact labels were assigned before scoring, using stroke tags and independently sampled rally intervals to locate clips. Sixteen of the 29 reviewed jumps had no jump tag on the corresponding stroke. [FineBadminton source release](https://huggingface.co/datasets/iLearn-Lab/Finebadminton-20K)
+
+| New holdout | Match | Native fps | Airborne frames | Negative frames | Uncertain frames | Jumps |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| [0022](labels/finebadminton-0022.csv) | Akane Yamaguchi vs Carolina Marín | 24.74 | 108 | 415 | 49 | 16 |
+| [0028](labels/finebadminton-0028.csv) | Tai Tzu Ying vs An Se Young | 24.72 | 86 | 405 | 64 | 13 |
+
+| Ensemble at its development cutoff for low false positives | Development airborne frames (of 402) | Holdout airborne frames (of 194) | Holdout false flags (of 820) | Holdout matched jumps (of 29) |
+| --- | ---: | ---: | ---: | ---: |
+| Original training data, 40 epochs | 362 | 174 | 9 | 26 |
+| Original training data, 114 epochs | 374 | 178 | 9 | 26 |
+| Expanded training data, 40 epochs | 389 | 185 | 19 | 26 |
+
+All three ensembles recorded eight false flags among 1,736 development negatives at these cutoffs. The expanded refit recovered 100/108 airborne frames with 14 false flags on 0022 and 85/86 with five false flags on 0028. Every reviewed binary label received a score. All 19 false flags were within four native frames of a confirmed airborne frame for the same player. The refit missed all four confirmed airborne frames of the short far-player jump around 19602 on 0022.
+
+At the development cutoff chosen for recall, the expanded refit found 192/194 holdout airborne frames (98.97%) with 56 false flags (6.83%). A diagnostic sweep of the two holdouts found 129/194 with at most four false flags for the expanded refit. The longer-run control reached 144/194 at the same false-positive limit. The strict targets remain unmet at a common verified cutoff.
+
+To reproduce the refit, start with the original ranked training command and include `--practice --soft-boundaries --ranking-weight 1 --temporal-augmentation`, the combined BWF labels with mined negatives, and the 0001 training cache. Repeat `--fit-reviewed-source POSE_CACHE SOURCE` for 0003, 0010, 0033, and 0009. For the control, omit those four sources and pass `--epochs 114`. Run `compare_pose_refit.py ENSEMBLE_DIRECTORY ... --dev POSE_CACHE SOURCE --holdout POSE_CACHE SOURCE`, repeating the development and holdout options for each match. The comparison uses each ensemble's training report to check for overlap with evaluation footage.
+
 Run `refine_jump_edges.py CHECKPOINT ... --dev CACHE SOURCE --holdout CACHE SOURCE` with the same temporal ensemble used by `verify_jump_events.py`. Repeat `--dev` for 0003, 0033, 0063, 0010, 0013, and the audited 0018 cache.

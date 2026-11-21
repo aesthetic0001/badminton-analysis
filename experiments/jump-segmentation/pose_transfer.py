@@ -39,8 +39,7 @@ def load_sequence(cache,source):
 
 
 def load_examples(cache,source,split,*,soft_boundaries=False,frame_steps=()):
-    if (soft_boundaries or frame_steps) and split!='train':
-        raise ValueError('Soft boundaries and temporal augmentation are for training labels.')
+    """Read a labeled source and optionally create soft targets or augmented pose windows."""
     sequence = load_sequence(cache,source)
     dense = sequence.frame_ids
     first = dense[0]
@@ -93,9 +92,12 @@ def training_samples(example):
 
 
 def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=False,
-        bwf_labels=None,ranking_weight=0.,temporal_augmentation=False,boundary_weight=1.):
+        bwf_labels=None,ranking_weight=0.,temporal_augmentation=False,boundary_weight=1.,
+        reviewed_sources=(),epochs=40):
     if not np.isfinite(boundary_weight) or boundary_weight<=0:
         raise ValueError('Use a positive finite boundary weight.')
+    if epochs < 1:
+        raise ValueError('Use at least one training epoch.')
     torch.set_num_threads(1)
     store = ObservationStore.open(bwf_run)
     sequence = collect_player_poses(store,store.load_calibration()['H_court_to_image'])
@@ -105,15 +107,19 @@ def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=F
                                    sequence.frame_ids,train_context=context)
     samples = [_examples(sequence,labels,split,hard,'train',frame_steps=steps)]
     targets = [np.where(split=='train',labels,-2)]
-    train_sources = [(cache,name) for name in ('finebadminton-0057','finebadminton-0070')]
+    original_sources = [(cache,name) for name in ('finebadminton-0057','finebadminton-0070')]
     if practice:
-        train_sources.extend((cache,f'mendeley-defence-{index}') for index in range(1,5))
-    train_sources.extend(extra_sources)
-    names = [name for _,name in train_sources]
+        original_sources.extend((cache,f'mendeley-defence-{index}') for index in range(1,5))
+    original_sources.extend(extra_sources)
+    train_sources = [(path,name,'train') for path,name in original_sources]
+    train_sources.extend((path,name,'validation') for path,name in reviewed_sources)
+    names = [name for _,name,_ in train_sources]
     if len(set(names))!=len(names):
         raise ValueError('Give each training source only once.')
-    for path,source in train_sources:
-        example = load_examples(path,source,'train',soft_boundaries=soft_boundaries,frame_steps=steps)
+    if 'finebadminton-0063' in names:
+        raise ValueError('FineBadminton 0063 is reserved for the training report.')
+    for path,source,label_split in train_sources:
+        example = load_examples(path,source,label_split,soft_boundaries=soft_boundaries,frame_steps=steps)
         samples.append(training_samples(example))
         targets.append(example[0])
     train = tuple(torch.cat(tensors) for tensors in zip(*(sample[:3] for sample in samples)))
@@ -135,14 +141,18 @@ def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=F
                 state = torch.load(pilot/method/f'motion-{seed}.pt',weights_only=True,map_location='cpu')
                 model.load_state_dict(state)
                 initial = score(model,holdout,fps=fps)
-            fit_classifier(model,*train,epochs=40,ranking_weight=ranking_weight,
+            fit_classifier(model,*train,epochs=epochs,ranking_weight=ranking_weight,
                            positive_weights=positive_weights)
             results.append({'model':method,'seed':seed,'initial':initial,
                             'fine_tuned':score(model,holdout,fps=fps)})
             torch.save(model.state_dict(),output/f'{method}-{seed}.pt')
-    report = {'train_sources':['bwf-pilot',*names],'positive_training_frames':int((train[1]==1).sum()),
+    report = {'train_sources':['bwf-pilot',*names],
+              'reviewed_training_sources':[name for _,name in reviewed_sources],
+              'positive_training_frames':int((train[1]==1).sum()),
               'negative_training_frames':int((train[1]==0).sum()),
+              'hard_negative_training_frames':int(train[2].sum()),
               'soft_boundary_frames':int(((train[1]>0)&(train[1]<1)).sum()),
+              'epochs':epochs,
               'ranking_weight':ranking_weight,'temporal_step_factors':[1.,*steps],
               'boundary_weight':boundary_weight,
               'holdout':'finebadminton-0063','results':results}
@@ -158,7 +168,10 @@ def main():
     parser.add_argument('output',type=Path)
     parser.add_argument('--practice',action='store_true')
     parser.add_argument('--extra-source',action='append',nargs=2,default=[],metavar=('CACHE','SOURCE'))
+    parser.add_argument('--fit-reviewed-source',action='append',nargs=2,default=[],metavar=('CACHE','SOURCE'),
+                        help='Fit using an earlier evaluation CSV. Exclude the source from subsequent evaluation.')
     parser.add_argument('--bwf-labels',type=Path,help='Use a different reviewed BWF label CSV.')
+    parser.add_argument('--epochs',type=int,default=40)
     parser.add_argument('--ranking-weight',type=float,default=0.,
                         help='Penalize high negative logits that outrank low positive logits.')
     parser.add_argument('--temporal-augmentation',action='store_true',
@@ -169,10 +182,11 @@ def main():
                         help='Supervise ambiguous takeoff and landing intervals with soft targets.')
     args = parser.parse_args()
     extra = [(Path(path),source) for path,source in args.extra_source]
+    reviewed = [(Path(path),source) for path,source in args.fit_reviewed_source]
     run(args.pose_cache,args.pilot,args.bwf_run,args.output,practice=args.practice,
         extra_sources=extra,soft_boundaries=args.soft_boundaries,bwf_labels=args.bwf_labels,
         ranking_weight=args.ranking_weight,temporal_augmentation=args.temporal_augmentation,
-        boundary_weight=args.boundary_weight)
+        boundary_weight=args.boundary_weight,reviewed_sources=reviewed,epochs=args.epochs)
 
 
 if __name__ == '__main__':

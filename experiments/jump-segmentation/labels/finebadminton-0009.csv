@@ -47,7 +47,9 @@ far,37495,37506,airborne,validation,jump_smash
 far,37506,37509,uncertain,validation,landing
 far,37509,37519,grounded,validation,recovery
 far,40386,40411,no_correction,validation,rally_play
-near,40386,40411,no_correction,validation,rally_play
+near,40386,40403,no_correction,validation,rally_play
+near,40403,40410,no_correction,validation,shuffle
+near,40410,40411,no_correction,validation,rally_play
 near,40509,40517,no_correction,validation,setup
 near,40517,40519,uncertain,validation,takeoff
 near,40519,40530,airborne,validation,jump_smash
