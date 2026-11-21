@@ -16,16 +16,21 @@ from badminton_analysis.jumps import LANDMARKS
 from badminton_analysis.positions import detect_court
 from badminton_analysis.prepare_rgb_player_crops import SOURCE_SIZE, _detect
 from badminton_analysis.rgb_mgmae import CENTER, FRAMES, resize_frame
-from badminton_analysis.train_rgb_mgmae import _decode
+from badminton_analysis.train_rgb_mgmae import _decode, _labels
 
 
-def extract(video, frames, detector, estimator, output, *, practice=False, reference_frame=None):
+def extract(video, frames, detector, estimator, output, *, practice=False, reference_frame=None,
+            labels=None):
     capture = cv2.VideoCapture(str(video),cv2.CAP_FFMPEG,[cv2.CAP_PROP_N_THREADS,3])
     try:
         if not capture.isOpened():
             raise FileNotFoundError(video)
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        if not np.isfinite(fps) or fps <= 0:
+            raise ValueError(f'No valid frame rate for {video}.')
         court = None
         if reference_frame is not None:
             reference = np.empty((1,height,width,3),dtype=np.uint8)
@@ -33,8 +38,14 @@ def extract(video, frames, detector, estimator, output, *, practice=False, refer
             size = (960,round(height*960/width))
             reduced = cv2.resize(reference[0],size,interpolation=cv2.INTER_AREA)
             court = np.diag([width/size[0],height/size[1],1.]) @ detect_court(reduced)['H_court_to_image']
-        if frames is None:
-            frames = np.arange(int(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
+        if labels is not None:
+            reviewed = _labels(labels,count)
+            centers = np.unique([index for partition in reviewed.values() for index in partition])
+            if not len(centers):
+                raise ValueError(f'No reviewed frames in {labels}.')
+            frames = np.unique(centers[:,None]+np.arange(FRAMES)-CENTER)
+        elif frames is None:
+            frames = np.arange(count)
         images = np.empty((len(frames),height,width,3),dtype=np.uint8)
         _decode(capture,frames,images,lambda frame: frame)
     finally:
@@ -67,7 +78,7 @@ def extract(video, frames, detector, estimator, output, *, practice=False, refer
             keypoints,confidence = estimator(image,boxes[i,slots])
             points[i,slots] = keypoints[:,LANDMARKS]
             scores[i,slots] = confidence[:,LANDMARKS]
-    np.savez_compressed(output,frames=frames,points=points,scores=scores,boxes=boxes)
+    np.savez_compressed(output,frames=frames,points=points,scores=scores,boxes=boxes,fps=fps)
     print(f'{output.stem}: {np.isfinite(boxes).all(axis=2).sum()} poses in {len(frames)} frames',flush=True)
 
 
@@ -109,13 +120,17 @@ def practice_boxes(detector,images):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output',type=Path)
-    parser.add_argument('rgb_caches',type=Path,nargs='+')
+    parser.add_argument('rgb_caches',type=Path,nargs='*')
+    parser.add_argument('--sources',type=Path,action='append',default=[],
+                        help='Prepare reviewed pose windows from a video and label manifest.')
     parser.add_argument('--detector',type=Path,default=Path('yolo26m.pt'))
     parser.add_argument('--pose-model',type=Path,required=True)
     parser.add_argument('--practice-directory',type=Path)
     parser.add_argument('--court-reference-frames',type=Path,
                         help='JSON mapping a fixed-camera source name to its court calibration frame.')
     args = parser.parse_args()
+    if not (args.rgb_caches or args.sources or args.practice_directory):
+        parser.error('Supply an RGB cache, a source manifest, or practice clips.')
     args.output.mkdir(parents=True,exist_ok=True)
     cv2.setNumThreads(2)
     torch.set_num_threads(4)
@@ -137,6 +152,16 @@ def main():
                 frames = np.unique(data['centers'][:,None]+np.arange(FRAMES)-CENTER)
             extract(metadata['video']['path'],frames,detector,estimator,output,
                     reference_frame=references.get(name))
+    for manifest in args.sources:
+        for item in json.loads(manifest.read_text())['sources']:
+            name = item['name']
+            if not name or Path(name).name!=name or name in ('.','..'):
+                raise ValueError('Use a file-safe source name.')
+            output = args.output/f'{name}.npz'
+            if output.exists():
+                raise FileExistsError(output)
+            extract(manifest.parent/item['video'],None,detector,estimator,output,
+                    reference_frame=references.get(name),labels=manifest.parent/item['labels'])
     if args.practice_directory:
         for video in sorted(args.practice_directory.glob('defence-*.mp4')):
             output = args.output/f'mendeley-{video.stem}.npz'

@@ -121,3 +121,21 @@ Use `pose_transfer.py --ranking-weight 1` with the earlier hard-negative and sof
 Extract shoe features with `shoe_motion.py POSE_NPZ VIDEO FLOW_CACHE/SOURCE.npz`. Pass trained pose checkpoints to `score_shoe_contact.py FLOW_CACHE CHECKPOINT ... --dev POSE_CACHE SOURCE --holdout POSE_CACHE SOURCE`. Repeat `--dev` for each development match. The shoe comparison used the soft-boundary scratch seed 27 and the mined-negative body-masking seed 17 checkpoints.
 
 The next run added 144 no-correction player-frames from 15 reviewed net-play windows in [0001](labels/finebadminton-0001-net.csv), [0057](labels/finebadminton-0057-net.csv), and [0070](labels/finebadminton-0070-net.csv). A frozen ranked checkpoint scored 73 clips around net shots and lifts so review could prioritize high-scoring lunges and shuffles. The added training examples did not improve the selected operating point. Its best development recall was 269/292 at three false flags, and that checkpoint transferred to 40/42 frames and 34/505 false flags. The ranked model trained on the earlier data remains the best of these development-selected runs at full recall on 0010.
+
+## Verification across an entire proposed jump
+
+A second model scores each proposed jump using its duration, peak, mean logit, time above a high score, and relative peak timing. It adjusts the original per-frame logits, which retain the timing information. Development scores came from fitting the verifier on three matches and predicting the fourth in turn. The original ranked pose checkpoint remained frozen. Using a higher verifier weight recovered 320/334 reviewed development positives at the false-positive target, up from 308/334 with the pose checkpoint alone. A lower-weight version recovered 318/334 there and needed fewer false flags to reach the recall target. An exploratory version built from pose-derived foot speed and hip rise did not improve the low-FPR result.
+
+[FineBadminton 0013](labels/finebadminton-0013.csv) was downloaded separately and kept out of both model fits and cutoff selection. It contributes 12 jumps, 106 confirmed airborne player-frames, and 555 confirmed negative frames. The source averages 24.80 fps. The native-rate test kept the original frame indices and used the source rate for event-timing allowances. All reviewed binary labels received scores. [FineBadminton source release](https://huggingface.co/datasets/iLearn-Lab/Finebadminton-20K)
+
+| Model at its development cutoff for low false positives | Airborne frames detected (of 106) | False flags (of 555) | Matched events (of 12) |
+| --- | ---: | ---: | ---: |
+| Ranked pose model | 96 | 3 | 11 |
+| Higher-weight verifier | 100 | 0 | 12 |
+| Lower-weight verifier | 99 | 2 | 12 |
+
+The six strict misses from the higher-weight verifier were all within two native frames of takeoff or landing. At the development cutoff for recall, the lower-weight verifier reached 104/106 with 14 false flags. A follow-up evaluation on the same match interpolated pose inputs to reproduce the training cadence of 30 fps. The higher-weight verifier then detected 97/106 with zero false flags and 11/12 matched events. The lower-weight version detected 103/106 with seven false flags at its development cutoff for recall. The interpolation run uses the same held-out match after the native-rate result was reviewed.
+
+On the earlier BWF match, the higher-weight verifier retained 20/21 airborne frames and 6/69 false flags, matching two of three jumps at its selected cutoff. It kept the first frame of the two-frame short hop at 46949, missed the second, and rejected the negligible split step at 57279. BWF contributed other clips to pose training.
+
+For pose-only sources, run `prepare_pose.py POSE_CACHE --sources SOURCES.json --pose-model RTMPOSE_WHOLEBODY.onnx --court-reference-frames court-reference-frames.json`. The manifest lists each video and label CSV. This preserves the native timing and bypasses the RGB pilot’s 30 fps preparation restriction. Run `verify_jump_events.py CHECKPOINT --dev CACHE SOURCE --holdout CACHE SOURCE`, repeating `--dev` for 0003, 0033, 0063, and 0010. Pass `--window-fps 30` for the cadence comparison.

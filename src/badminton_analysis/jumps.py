@@ -122,20 +122,48 @@ def collect_player_poses(store, homography, court_min_score=.45, foot_min_score=
     return PoseSequence(*(np.concatenate(parts) for parts in (ids, valid, points, scores, boxes)))
 
 
-def pose_windows(sequence, frames, players):
+def _resampled_window_inputs(sequence,frames,players,frame_step):
+    offsets = frame_step*np.arange(-HALF_WINDOW,HALF_WINDOW+1)
+    samples = frames[:,None]+offsets
+    start = np.floor(samples).astype(int)
+    stop = np.ceil(samples).astype(int)
+    last = len(sequence.frame_ids)-1
+    lower,upper = start.clip(0,last),stop.clip(0,last)
+    mix = samples-start
+    selection = players[:,None]
+    # Both interpolation endpoints must belong to the same uninterrupted view.
+    cuts = np.cumsum(~sequence.court_valid)
+    valid = ((start>=0)&(stop<=last)&sequence.court_valid[frames,None]
+             &sequence.court_valid[lower]&sequence.court_valid[upper]
+             &(cuts[lower]==cuts[frames,None])&(cuts[upper]==cuts[frames,None]))
+    points_before = sequence.points[lower,selection]
+    points_after = sequence.points[upper,selection]
+    points = (1-mix[...,None,None])*points_before+mix[...,None,None]*points_after
+    confidence = np.minimum(sequence.scores[lower,selection],sequence.scores[upper,selection])
+    boxes = ((1-mix[...,None])*sequence.boxes[lower,selection]
+             +mix[...,None]*sequence.boxes[upper,selection])
+    return points,confidence,boxes,valid
+
+
+def pose_windows(sequence, frames, players, *, frame_step=1.):
     """Return zero-padded windows with explicit landmark confidences and frame presence."""
+    if not np.isfinite(frame_step) or frame_step<=0:
+        raise ValueError('Window frame spacing must be finite and positive.')
     frames, players = np.asarray(frames), np.asarray(players)
-    indices = frames[:, None] + np.arange(-HALF_WINDOW, HALF_WINDOW + 1)
-    clipped = indices.clip(0, len(sequence.frame_ids) - 1)
-    points = sequence.points[clipped, players[:, None]]
-    scores = sequence.scores[clipped, players[:, None]]
-    boxes = sequence.boxes[clipped, players[:, None]]
-    inside = indices == clipped
-    # Keep windows on the target side of a cut or failed court check.
-    valid = (inside & sequence.court_valid[clipped])
-    center = valid[:, HALF_WINDOW:HALF_WINDOW+1]
-    valid[:, :HALF_WINDOW] &= np.logical_and.accumulate(valid[:, :HALF_WINDOW][:, ::-1], axis=1)[:, ::-1] & center
-    valid[:, HALF_WINDOW+1:] &= np.logical_and.accumulate(valid[:, HALF_WINDOW+1:], axis=1) & center
+    if frame_step == 1.:
+        indices = frames[:, None] + np.arange(-HALF_WINDOW, HALF_WINDOW + 1)
+        clipped = indices.clip(0, len(sequence.frame_ids) - 1)
+        points = sequence.points[clipped, players[:, None]]
+        scores = sequence.scores[clipped, players[:, None]]
+        boxes = sequence.boxes[clipped, players[:, None]]
+        valid = (indices == clipped) & sequence.court_valid[clipped]
+        center = valid[:, HALF_WINDOW:HALF_WINDOW+1]
+        # Keep windows on the target side of a cut or failed court check.
+        left = np.logical_and.accumulate(valid[:, :HALF_WINDOW][:, ::-1], axis=1)[:, ::-1]
+        valid[:, :HALF_WINDOW] &= left & center
+        valid[:, HALF_WINDOW+1:] &= np.logical_and.accumulate(valid[:, HALF_WINDOW+1:], axis=1) & center
+    else:
+        points,scores,boxes,valid = _resampled_window_inputs(sequence,frames,players,frame_step)
     present = valid & np.isfinite(boxes).all(axis=-1)
     box_centers = (boxes[..., :2] + boxes[..., 2:]) / 2
     height = boxes[..., 3] - boxes[..., 1]
@@ -162,7 +190,7 @@ def pose_windows(sequence, frames, players):
                            root_delta, present[..., None]), axis=-1).astype(np.float32)
 
 
-def predict_airborne(model, sequence, batch_size=512):
+def predict_airborne(model, sequence, batch_size=512, *, frame_step=1.):
     """Score each eligible source frame with at least one pose in its centered window."""
     probabilities = np.full((len(sequence.frame_ids), 2), np.nan, dtype=np.float32)
     frames, players = np.nonzero(np.broadcast_to(sequence.court_valid[:, None], probabilities.shape))
@@ -172,7 +200,7 @@ def predict_airborne(model, sequence, batch_size=512):
         for start in range(0, len(frames), batch_size):
             rows = frames[start:start+batch_size]
             slots = players[start:start+batch_size]
-            windows = pose_windows(sequence, rows, slots)
+            windows = pose_windows(sequence,rows,slots,frame_step=frame_step)
             has_data = windows[..., -1].any(axis=1)
             scores = model(torch.from_numpy(windows[has_data]).to(device)).sigmoid().cpu().numpy()
             probabilities[rows[has_data], slots[has_data]] = scores

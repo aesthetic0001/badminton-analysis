@@ -18,6 +18,11 @@ LABELS = Path(__file__).parent/'labels'
 STATES = {'grounded':0,'no_correction':0,'airborne':1,'uncertain':-1}
 
 
+def pose_cache_fps(cache,source):
+    with np.load(cache/f'{source}.npz',allow_pickle=False) as data:
+        return float(data.get('fps',30.))
+
+
 def load_sequence(cache,source):
     with np.load(cache/f'{source}.npz',allow_pickle=False) as data:
         frame_ids = data['frames']
@@ -67,13 +72,13 @@ def load_examples(cache,source,split,*,soft_boundaries=False):
     return targets,hard,index,windows,keep
 
 
-def score(model,holdout,threshold=.5):
+def score(model,holdout,threshold=.5,*,fps=30.):
     labels,_,index,windows,keep = holdout
     probabilities = np.full(labels.shape,np.nan)
     model.eval()
     with torch.inference_mode():
         probabilities[index[0][keep],index[1][keep]] = model(windows[keep]).sigmoid().numpy()
-    return evaluate_jump_scores(labels,probabilities,fps=30,threshold=threshold)
+    return evaluate_jump_scores(labels,probabilities,fps=fps,threshold=threshold)
 
 
 def training_samples(example):
@@ -101,6 +106,7 @@ def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=F
                    for path,source in train_sources)
     train = tuple(torch.cat(tensors) for tensors in zip(*samples))
     holdout = load_examples(cache,'finebadminton-0063','validation')
+    fps = pose_cache_fps(cache,'finebadminton-0063')
     results = []
     output.mkdir(parents=True)
     for method in ('scratch','mgmae-body','mgmae-relationships'):
@@ -111,9 +117,10 @@ def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=F
             if method != 'scratch':
                 weights = torch.load(pilot/method/f'motion-{seed}.pt',weights_only=True,map_location='cpu')
                 model.load_state_dict(weights)
-                initial = score(model,holdout)
+                initial = score(model,holdout,fps=fps)
             fit_classifier(model,*train,epochs=40,ranking_weight=ranking_weight)
-            results.append({'model':method,'seed':seed,'initial':initial,'fine_tuned':score(model,holdout)})
+            results.append({'model':method,'seed':seed,'initial':initial,
+                            'fine_tuned':score(model,holdout,fps=fps)})
             torch.save(model.state_dict(),output/f'{method}-{seed}.pt')
     report = {'train_sources':['bwf-pilot',*names],'positive_training_frames':int((train[1]==1).sum()),
               'negative_training_frames':int((train[1]==0).sum()),

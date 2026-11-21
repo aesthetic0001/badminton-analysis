@@ -10,10 +10,10 @@ import torch
 from badminton_analysis.jump_benchmark import evaluate_jump_scores, jump_operating_points
 from badminton_analysis.jump_decode import decode_jump_scores
 from badminton_analysis.jumps import JumpSegmenter, predict_airborne
-from pose_transfer import load_examples, load_sequence, score
+from pose_transfer import load_examples, load_sequence, pose_cache_fps, score
 
 
-def score_at_development_cutoffs(model,development,holdout,sequence,threshold):
+def score_at_development_cutoffs(model,development,holdout,sequence,threshold,fps):
     positive,negative = [],[]
     for targets,source_sequence in development:
         estimated = predict_airborne(model,source_sequence)
@@ -22,14 +22,14 @@ def score_at_development_cutoffs(model,development,holdout,sequence,threshold):
     operating = jump_operating_points(np.concatenate(positive),np.concatenate(negative))
     estimated = predict_airborne(model,sequence)
     scores = {'development_operating_points':operating,
-              'holdout_at_fixed_threshold':evaluate_jump_scores(holdout,estimated,fps=30,
+              'holdout_at_fixed_threshold':evaluate_jump_scores(holdout,estimated,fps=fps,
                                                                threshold=threshold),
               'holdout_threshold_diagnostic':jump_operating_points(estimated[holdout==1],
                                                                    estimated[holdout==0])}
     for kind in ('specificity','recall'):
         cutoff = operating[f'{kind}_threshold']
         scores[f'holdout_at_development_{kind}_threshold'] = (
-            evaluate_jump_scores(holdout,estimated,fps=30,threshold=cutoff) if cutoff is not None else None
+            evaluate_jump_scores(holdout,estimated,fps=fps,threshold=cutoff) if cutoff is not None else None
         )
     return scores
 
@@ -52,6 +52,7 @@ def main():
         parser.error('Development cutoff calibration requires raw pose scores.')
     torch.set_num_threads(1)
     holdout = load_examples(args.pose_cache,args.source,'validation')
+    fps = pose_cache_fps(args.pose_cache,args.source)
     sequence = load_sequence(args.pose_cache,args.source) if args.decode or names else None
     development = []
     for cache,name in args.development or []:
@@ -66,12 +67,12 @@ def main():
             peak,takeoff,landing = args.decode
             probabilities = predict_airborne(model,sequence)
             decisions = decode_jump_scores(probabilities,peak_threshold=peak,
-                                           takeoff_threshold=takeoff,landing_threshold=landing)
-            result = evaluate_jump_scores(holdout[0],decisions,fps=30)
+                                           takeoff_threshold=takeoff,landing_threshold=landing,fps=fps)
+            result = evaluate_jump_scores(holdout[0],decisions,fps=fps)
         elif development:
-            result = score_at_development_cutoffs(model,development,holdout[0],sequence,args.threshold)
+            result = score_at_development_cutoffs(model,development,holdout[0],sequence,args.threshold,fps)
         else:
-            result = score(model,holdout,args.threshold)
+            result = score(model,holdout,args.threshold,fps=fps)
         report[str(checkpoint)] = result
     print(json.dumps(report,indent=2))
 
