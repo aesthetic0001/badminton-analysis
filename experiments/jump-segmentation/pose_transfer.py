@@ -18,7 +18,7 @@ LABELS = Path(__file__).parent/'labels'
 STATES = {'grounded':0,'no_correction':0,'airborne':1,'uncertain':-1}
 
 
-def load_examples(cache,source,split):
+def load_sequence(cache,source):
     with np.load(cache/f'{source}.npz',allow_pickle=False) as data:
         frame_ids = data['frames']
         first = frame_ids[0]
@@ -28,9 +28,19 @@ def load_examples(cache,source,split):
         for key,fill in [('points',np.nan),('boxes',np.nan),('scores',0)]:
             values[key] = np.full((len(dense),*data[key].shape[1:]),fill,dtype=np.float32)
             values[key][sparse] = data[key]
-    sequence = PoseSequence(dense,np.isin(dense,frame_ids),**values)
-    targets = np.full((len(dense),2),-2,dtype=np.int8)
+    return PoseSequence(dense,np.isin(dense,frame_ids),**values)
+
+
+def load_examples(cache,source,split,*,soft_boundaries=False):
+    if soft_boundaries and split!='train':
+        raise ValueError('Soft boundaries are for training labels.')
+    sequence = load_sequence(cache,source)
+    dense = sequence.frame_ids
+    first = dense[0]
+    dtype = np.float32 if soft_boundaries else np.int8
+    targets = np.full((len(dense),2),-2,dtype=dtype)
     hard = np.zeros_like(targets,dtype=bool)
+    boundaries = []
     with (LABELS/f'{source}.csv').open() as handle:
         for row in csv.DictReader(handle):
             start,stop = int(row['start_frame']),int(row['stop_frame'])
@@ -43,6 +53,14 @@ def load_examples(cache,source,split):
             state = STATES[row['state']]
             targets[interval] = state
             hard[interval] = state==0 and row['kind'] in ('lunge','shuffle')
+            if soft_boundaries and state==-1 and row['kind'] in ('takeoff','landing'):
+                boundaries.append((start-first,stop-first,slot,row['kind']))
+    for start,stop,slot,kind in boundaries:
+        if start == 0 or stop == len(targets):
+            continue
+        before,after = (0,1) if kind=='takeoff' else (1,0)
+        if targets[start-1,slot]==before and targets[stop,slot]==after:
+            targets[start:stop,slot] = np.linspace(before,after,stop-start+2)[1:-1]
     index = np.nonzero(targets != -2)
     windows = torch.from_numpy(pose_windows(sequence,*index))
     keep = windows[..., -1].any(dim=1).numpy()
@@ -64,16 +82,22 @@ def training_samples(example):
     return windows[known],torch.tensor(labels[index][known],dtype=torch.float32),torch.from_numpy(hard[index][known])
 
 
-def run(cache,pilot,bwf_run,output,*,practice):
+def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=False,bwf_labels=None):
     torch.set_num_threads(1)
     store = ObservationStore.open(bwf_run)
     sequence = collect_player_poses(store,store.load_calibration()['H_court_to_image'])
-    labels,split,hard = load_labels(pilot/'bwf-correction-target-labels.csv',sequence.frame_ids)
+    labels,split,hard = load_labels(bwf_labels or pilot/'bwf-correction-target-labels.csv',
+                                   sequence.frame_ids)
     samples = [_examples(sequence,labels,split,hard,'train')[:3]]
-    train_sources = ['finebadminton-0057','finebadminton-0070']
+    train_sources = [(cache,name) for name in ('finebadminton-0057','finebadminton-0070')]
     if practice:
-        train_sources.extend(f'mendeley-defence-{index}' for index in range(1,5))
-    samples.extend(training_samples(load_examples(cache,source,'train')) for source in train_sources)
+        train_sources.extend((cache,f'mendeley-defence-{index}') for index in range(1,5))
+    train_sources.extend(extra_sources)
+    names = [name for _,name in train_sources]
+    if len(set(names))!=len(names):
+        raise ValueError('Give each training source only once.')
+    samples.extend(training_samples(load_examples(path,source,'train',soft_boundaries=soft_boundaries))
+                   for path,source in train_sources)
     train = tuple(torch.cat(tensors) for tensors in zip(*samples))
     holdout = load_examples(cache,'finebadminton-0063','validation')
     results = []
@@ -90,8 +114,10 @@ def run(cache,pilot,bwf_run,output,*,practice):
             fit_classifier(model,*train,epochs=40)
             results.append({'model':method,'seed':seed,'initial':initial,'fine_tuned':score(model,holdout)})
             torch.save(model.state_dict(),output/f'{method}-{seed}.pt')
-    report = {'train_sources':['bwf-pilot',*train_sources],'positive_training_frames':int(train[1].sum()),
-              'negative_training_frames':int((train[1]==0).sum()),'holdout':'finebadminton-0063','results':results}
+    report = {'train_sources':['bwf-pilot',*names],'positive_training_frames':int((train[1]==1).sum()),
+              'negative_training_frames':int((train[1]==0).sum()),
+              'soft_boundary_frames':int(((train[1]>0)&(train[1]<1)).sum()),
+              'holdout':'finebadminton-0063','results':results}
     (output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))
 
@@ -103,8 +129,14 @@ def main():
     parser.add_argument('bwf_run',type=Path)
     parser.add_argument('output',type=Path)
     parser.add_argument('--practice',action='store_true')
+    parser.add_argument('--extra-source',action='append',nargs=2,default=[],metavar=('CACHE','SOURCE'))
+    parser.add_argument('--bwf-labels',type=Path,help='Use a different reviewed BWF label CSV.')
+    parser.add_argument('--soft-boundaries',action='store_true',
+                        help='Supervise ambiguous takeoff and landing intervals with soft targets.')
     args = parser.parse_args()
-    run(args.pose_cache,args.pilot,args.bwf_run,args.output,practice=args.practice)
+    extra = [(Path(path),source) for path,source in args.extra_source]
+    run(args.pose_cache,args.pilot,args.bwf_run,args.output,practice=args.practice,
+        extra_sources=extra,soft_boundaries=args.soft_boundaries,bwf_labels=args.bwf_labels)
 
 
 if __name__ == '__main__':

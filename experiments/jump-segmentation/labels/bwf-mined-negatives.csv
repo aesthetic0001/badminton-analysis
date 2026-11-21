@@ -1,0 +1,10 @@
+player,start_frame,stop_frame,state,split,kind
+far,12771,12778,no_correction,train,lunge
+near,13608,13615,grounded,train,lunge
+near,13852,13859,grounded,train,lunge
+far,13864,13871,no_correction,train,shuffle
+near,14194,14203,grounded,train,lunge
+near,16442,16450,no_correction,train,lunge
+far,22623,22631,no_correction,train,shuffle
+far,51775,51782,no_correction,train,shuffle
+far,54387,54394,no_correction,train,shuffle

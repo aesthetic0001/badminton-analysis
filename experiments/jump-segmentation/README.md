@@ -74,3 +74,28 @@ Use [the reviewed intervals for 0033](labels/finebadminton-0033.csv) to prepare 
 .venv/bin/python experiments/jump-segmentation/score_pose.py \
   COURT_POSE_CACHE finebadminton-0033 PILOT_OUTPUT/scratch-27.pt
 ```
+
+## Boundary experiments and ordinary rally play
+
+[FineBadminton 0003](labels/finebadminton-0003.csv) adds 12 jumps and eight samples of ordinary rally play selected independently of model scores. It has 130 verified airborne frames and 509 negative player-frames, with 333 of those sampled from ordinary play. An audit at source frame 20700 confirmed that the far player's foot had planted several frames earlier than the first review indicated. The table uses the corrected boundary for every checkpoint. All binary labels received scores.
+
+The boundary decoder keeps a 0.5 segment when it includes a sufficiently confident peak, then extends it by up to two frames at each end at 30 fps when the adjacent score supports the transition. Both settings were chosen on BWF, 0063, and 0033. The pose-score comparison with foot-motion features used one match at a time for evaluation while fitting on the other two. It missed more airborne frames, so the holdout comparison used the simpler decoder.
+
+| Method on 0003 | Airborne frames detected (of 130) | False flags (of 509) | Events matched (of 12) |
+| --- | ---: | ---: | ---: |
+| Fixed scratch seed 27, direct 0.5 threshold | 123 | 26 | 12 |
+| Same checkpoint, decoder with thresholds 0.98 / 0.30 / 0.50 | 119 | 13 | 11 |
+| Same checkpoint, decoder with thresholds 0.98 / 0.10 / 0.10 | 121 | 19 | 11 |
+| Expanded supervised training, highest-recall run | 129 | 45 | 12 |
+| Expanded training with soft boundaries, highest-recall run with fewer false flags | 129 | 31 | 12 |
+| Expanded training with soft boundaries, lowest-FPR run | 121 | 6 | 11 |
+
+The expanded training adds [10 jumps and 131 negative frames from FineBadminton 0001](labels/finebadminton-0001.csv). The optional soft targets give partial probability to 143 uncertain training frames between verified grounded and airborne states. These targets model a transition with an equally likely landing or takeoff time inside the reviewed interval. The strict benchmark still uses verified binary labels. Across three seeds and three initializations per configuration, expanded training raised mean recall from 122.4 to 127.3 of 130 frames at 0.5 and increased false flags from 23.0 to 32.7. Adding soft boundaries yielded means of 125.4 detected and 23.7 false flags.
+
+A sweep over the held-out frame scores quantifies the remaining gap. The best of 27 refitted checkpoints detected 119 of 130 airborne frames at the maximum of two false flags allowed by the 0.5% FPR target on this sample. The lowest false-positive count at the 99% recall target was 27 of 509. The sweep diagnoses separability on 0003. Any selected operating point needs verification on unused footage. The frame errors include confidently flagged approach steps and shuffles, so boundary recovery alone leaves a substantial false-positive problem.
+
+To evaluate the decoder, add `--decode .98 .30 .50` to the `score_pose.py` command. To include 0001 when fitting, prepare a separate labels-only pose cache and add `--extra-source POSE_CACHE_0001 finebadminton-0001` to the `pose_transfer.py` command. Add `--soft-boundaries` to reproduce the soft-target comparison.
+
+A follow-up run added [67 hard-negative frames](labels/bwf-mined-negatives.csv) from nine short, high-confidence model predictions in the BWF training match. Review confirmed planted lunges, strides, and negligible shuffles. At 0.5, mean false flags fell from 23.7 to 16.4 across the nine runs with soft boundaries. Mean airborne frames detected fell from 125.4 to 119.3. One run recorded 112/130 airborne frames with zero false flags. The holdout threshold diagnostic improved to 122/130 airborne frames with at most two false flags. At 99% recall, the lowest false-positive count among the new runs was 24/509.
+
+To reproduce this follow-up, append the mined intervals to the existing BWF training label CSV and pass the new file with `--bwf-labels`. Keep the BWF validation rows in the combined CSV.
