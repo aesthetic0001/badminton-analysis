@@ -11,19 +11,28 @@ from rtmlib import RTMPose
 import torch
 from ultralytics import YOLO
 
+from badminton_analysis.court_player_boxes import select_court_players
 from badminton_analysis.jumps import LANDMARKS
+from badminton_analysis.positions import detect_court
 from badminton_analysis.prepare_rgb_player_crops import SOURCE_SIZE, _detect
 from badminton_analysis.rgb_mgmae import CENTER, FRAMES, resize_frame
 from badminton_analysis.train_rgb_mgmae import _decode
 
 
-def extract(video, frames, detector, estimator, output, *, practice=False):
+def extract(video, frames, detector, estimator, output, *, practice=False, reference_frame=None):
     capture = cv2.VideoCapture(str(video),cv2.CAP_FFMPEG,[cv2.CAP_PROP_N_THREADS,3])
     try:
         if not capture.isOpened():
             raise FileNotFoundError(video)
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        court = None
+        if reference_frame is not None:
+            reference = np.empty((1,height,width,3),dtype=np.uint8)
+            _decode(capture,[reference_frame],reference,lambda frame: frame)
+            size = (960,round(height*960/width))
+            reduced = cv2.resize(reference[0],size,interpolation=cv2.INTER_AREA)
+            court = np.diag([width/size[0],height/size[1],1.]) @ detect_court(reduced)['H_court_to_image']
         if frames is None:
             frames = np.arange(int(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
         images = np.empty((len(frames),height,width,3),dtype=np.uint8)
@@ -33,6 +42,8 @@ def extract(video, frames, detector, estimator, output, *, practice=False):
 
     if practice:
         sampled, detections = practice_boxes(detector,images)
+    elif court is not None:
+        sampled, detections = calibrated_boxes(detector,images,frames,court)
     else:
         resized = np.array([resize_frame(frame,SOURCE_SIZE) for frame in images])
         sampled,detections = _detect(detector,resized)
@@ -60,6 +71,24 @@ def extract(video, frames, detector, estimator, output, *, practice=False):
     print(f'{output.stem}: {np.isfinite(boxes).all(axis=2).sum()} poses in {len(frames)} frames',flush=True)
 
 
+def calibrated_boxes(detector,images,frames,court):
+    sampled = np.arange(0,len(images),2)
+    detections = []
+    previous = np.full((2,4),np.nan)
+    last = np.full(2,frames[0]-100)
+    for batch in np.array_split(sampled,int(np.ceil(len(sampled)/8))):
+        predictions = detector.predict([images[i] for i in batch],imgsz=960,classes=[0],
+                                       conf=.18,device='cpu',verbose=False)
+        for i,result in zip(batch,predictions):
+            previous[frames[i]-last>6] = np.nan
+            boxes = select_court_players(result.boxes.xyxy.numpy(),result.boxes.conf.numpy(),court,previous)
+            detections.append(boxes)
+            observed = np.isfinite(boxes).all(axis=1)
+            previous[observed] = boxes[observed]
+            last[observed] = frames[i]
+    return sampled,np.array(detections)
+
+
 def practice_boxes(detector,images):
     """Select the foreground player in the labeled portrait practice clips."""
     height,width = images.shape[1:3]
@@ -84,6 +113,8 @@ def main():
     parser.add_argument('--detector',type=Path,default=Path('yolo26m.pt'))
     parser.add_argument('--pose-model',type=Path,required=True)
     parser.add_argument('--practice-directory',type=Path)
+    parser.add_argument('--court-reference-frames',type=Path,
+                        help='JSON mapping a fixed-camera source name to its court calibration frame.')
     args = parser.parse_args()
     args.output.mkdir(parents=True,exist_ok=True)
     cv2.setNumThreads(2)
@@ -95,6 +126,7 @@ def main():
     options.inter_op_num_threads = 1
     estimator.session = ort.InferenceSession(args.pose_model,sess_options=options,
                                              providers=['CPUExecutionProvider'])
+    references = json.loads(args.court_reference_frames.read_text()) if args.court_reference_frames else {}
     for directory in args.rgb_caches:
         for name in json.loads((directory/'sources.json').read_text()):
             output = args.output/f'{name}.npz'
@@ -103,7 +135,8 @@ def main():
             metadata = json.loads((directory/f'{name}.json').read_text())
             with np.load(directory/f'{name}.npz',allow_pickle=False) as data:
                 frames = np.unique(data['centers'][:,None]+np.arange(FRAMES)-CENTER)
-            extract(metadata['video']['path'],frames,detector,estimator,output)
+            extract(metadata['video']['path'],frames,detector,estimator,output,
+                    reference_frame=references.get(name))
     if args.practice_directory:
         for video in sorted(args.practice_directory.glob('defence-*.mp4')):
             output = args.output/f'mendeley-{video.stem}.npz'

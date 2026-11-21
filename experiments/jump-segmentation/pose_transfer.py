@@ -49,13 +49,13 @@ def load_examples(cache,source,split):
     return targets,hard,index,windows,keep
 
 
-def score(model,holdout):
+def score(model,holdout,threshold=.5):
     labels,_,index,windows,keep = holdout
     probabilities = np.full(labels.shape,np.nan)
     model.eval()
     with torch.inference_mode():
         probabilities[index[0][keep],index[1][keep]] = model(windows[keep]).sigmoid().numpy()
-    return evaluate_jump_scores(labels,probabilities,fps=30)
+    return evaluate_jump_scores(labels,probabilities,fps=30,threshold=threshold)
 
 
 def training_samples(example):

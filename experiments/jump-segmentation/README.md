@@ -53,3 +53,24 @@ Prepare one RGB cache with reviewed frames from 0057 and 0070 and a separate cac
 ```
 
 The pilot directory supplies `bwf-correction-target-labels.csv` and the `motion-{7,17,27}.pt` checkpoints in `mgmae-body/` and `mgmae-relationships/`. To reproduce the joint-vector pretraining, pass `--regions body --bone-weight .5` to `badminton_analysis.train_pose_mgmae`. Use `--regions body` alone for the control.
+
+## Court-aware player tracking
+
+Nine of the ten previous false flags from the scratch seed 27 checkpoint on 0063 occurred while the far-player box was on a line judge. For the calibrated extraction, project detection boxes onto the court, screen for plausible player locations, and favor continuity with the last detection for each side. The calibrated extractor also runs person detection at 960 pixels and samples every other frame. The previous extractor used 640 pixels and sampled every fourth frame. All checkpoint weights and the 0.5 threshold were fixed for this comparison.
+
+| Evaluation set | Earlier extraction | Court-aware extraction |
+| --- | --- | --- |
+| FineBadminton 0063, 5 reviewed jumps | 44/49 airborne frames, 10/69 false flags, 4/5 matched events | 48/49 airborne frames, 1/69 false flags, 5/5 matched events |
+| FineBadminton 0033, 12 newly reviewed jumps | 101/113 airborne frames, 10/178 false flags, 11/12 matched events | 104/113 airborne frames, 4/178 false flags, 12/12 matched events |
+
+Both rows use scratch seed 27 from the practice-augmented training run. On 0033, false flags averaged 8.9 per checkpoint with earlier extraction and 2.6 with court-aware extraction across all nine checkpoints. Two checkpoints recorded zero false flags there with 93/113 strict airborne-frame recall. The top-recall checkpoint’s nine remaining missed frames were within two frames of takeoff or landing. All reviewed binary labels were scored. The separately trained three-seed refit on court-aware inputs peaked at 99/113 strict recall on 0033. The sampled windows still leave the 99% strict recall and 0.5% FPR targets unverified on broader play.
+
+Use [the reviewed intervals for 0033](labels/finebadminton-0033.csv) to prepare a separate RGB cache. Its V1 pose inputs and the court-aware version can be scored against the same checkpoint. The [court reference map](court-reference-frames.json) identifies fixed-camera calibration frames. Calibrations apply to the same camera view within each reviewed segment.
+
+```bash
+.venv/bin/python experiments/jump-segmentation/prepare_pose.py \
+  COURT_POSE_CACHE RGB_CACHE_0033 --pose-model RTMPOSE_WHOLEBODY.onnx \
+  --court-reference-frames experiments/jump-segmentation/court-reference-frames.json
+.venv/bin/python experiments/jump-segmentation/score_pose.py \
+  COURT_POSE_CACHE finebadminton-0033 PILOT_OUTPUT/scratch-27.pt
+```
