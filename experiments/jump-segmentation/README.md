@@ -445,3 +445,33 @@ Eight offline smoothing settings varied centered median versus triangular-weight
 For the supplemental 0051 audit, seven additional overhead windows were selected by shot type and player side without viewing predictions. These included two genuine jumps without jump tags. The review added 18 confirmed airborne, 130 grounded, and 62 uncertain frames. On these new windows the frozen baseline at its previous cutoff found all 18 airborne frames and flagged 1/130 grounded frames, immediately after landing. Combined with the original review, it found 136/141 airborne frames and flagged 14/527 grounded frames. All 14 jumps matched with timing allowance. The original 0051 label counts and box-stride row refer to the version in commit `d524dbe`. To assemble the expanded evaluation cache with the same stride parity, extract the original and supplemental windows separately and concatenate the two disjoint sets of pose and court-validity rows in source-frame order.
 
 A controlled training rerun omitted soft targets for uncertain contact frames. It kept the same training sources, confirmed labels, seeds, cadence handling, and epoch schedule as the repeat-free refit. On the nine original audits, both runs recovered 1,016/1,075 at their own development cutoffs for low false positives. Omitting the soft targets reduced false flags from 109 to 100 and increased timing-tolerant matches from 106 to 108. The frozen baseline recovered 1,015 with 96 false flags and 105 timing-tolerant matches. The confirmed-only rerun remains short of the strict targets.
+
+## Sampling difficult airborne frames
+
+The overhead refit with 2× hard-negative sampling was repeated with three weights for difficult airborne frames. All four refits used the same data, three seeds per initialization, and 40 epochs. During the second half of training, `--hard-positive-weight` upweights confirmed airborne windows at or below the current 25th-percentile positive logit. The sampler then rescales the positive weights to preserve their total mass. The ranking loss and hard-negative sampling use the previous settings. The default positive multiplier is 1. To reproduce a weighted run, add `--hard-positive-weight 1.25`, `2`, or `4` to the preceding overhead training command.
+
+The four development matches select the verifier and both operating thresholds for each ensemble. The six earlier audits are 0022, 0024, 0025, 0042, 0043, and expanded 0051. All audit labels received scores.
+
+| Pose run | Development airborne detections under the false-positive limit (of 363) | Earlier audit detections and flags at that cutoff (830 airborne, 3,010 grounded) | Earlier audit detections and flags at the 99% development recall cutoff |
+| --- | ---: | ---: | ---: |
+| Frozen baseline | 355 | 781 / 50 | 810 / 121 |
+| Overhead refit, 1× | 352 | 758 / 54 | 806 / 99 |
+| Overhead refit, 1.25× | 349 | 750 / 57 | 801 / 88 |
+| Overhead refit, 2× | 337 | 717 / 54 | 806 / 102 |
+| Overhead refit, 4× | 271 | 544 / 35 | 813 / 165 |
+
+At the cutoff for low false positives, the 2× refit missed 36/184 takeoff frames, 44/182 landing frames, and 33/464 interior frames. The matching 1× refit missed 23, 30, and 19 respectively. Each boundary covers up to two confirmed frames per jump, with takeoff taking precedence for any overlap. The 4× run reduced false flags at this cutoff but lost 214 airborne detections compared with 1×. The baseline remains the frozen reference.
+
+[FineBadminton 0054](labels/finebadminton-0054.csv) is a different broadcast featuring Viktor Axelsen and Lei Lan Xi. The independent review covered eight jump-tagged windows, six other overhead windows, and four sampled rally windows. It contains 13 confirmed jumps, six without jump tags, with 128 airborne, 418 grounded, and 124 uncertain player-frames. The 30 fps footage contains repeated images at phase three of the six-frame cycle. Use `--repeat-cadence finebadminton-0054 6 3` with the court-checked pose cache and include 0054 only as a holdout. All 786 extracted frames passed the reference court check, and all binary labels received scores. [FineBadminton source release](https://huggingface.co/datasets/iLearn-Lab/Finebadminton-20K)
+
+| Pose run | 0054 detections and flags at the low-false-positive development cutoff | 0054 matched jumps at that cutoff (of 13) | 0054 detections and flags at the 99% development recall cutoff |
+| --- | ---: | ---: | ---: |
+| Frozen baseline | 125 / 5 | 12 | 128 / 9 |
+| Overhead refit, 1× | 121 / 5 | 11 | 128 / 7 |
+| Overhead refit, 1.25× | 124 / 6 | 11 | 128 / 8 |
+| Overhead refit, 2× | 112 / 6 | 8 | 128 / 12 |
+| Overhead refit, 4× | 92 / 6 | 6 | 128 / 15 |
+
+All five baseline false flags followed landing on the far side. Its three misses were two far-side takeoff frames and one far-side landing frame. A diagnostic threshold sweep on 0054 recovered at most 114/128 below 0.5% false positives. Across the seven audits, the frozen baseline recovered 906/958 airborne frames and flagged 55/3,428 grounded frames at the fixed cutoff for low false positives. It matched 94/105 jumps using the duration-dependent timing allowance. A pooled diagnostic sweep of the frozen scores recovered at most 630/958 after enforcing the false-positive limit. At the highest cutoff still recovering 99% of the pooled airborne frames, it flagged 539/3,428 grounded frames. This sweep uses audit labels to measure score separation.
+
+A separate diagnostic adjusted the frozen ensemble's mean logit by its per-frame logit standard deviation across the nine member checkpoints. Multiplier candidates were −0.5, −0.25, −0.125, 0, 0.125, 0.25, and 0.5. Selecting by most airborne detections under the development false-positive limit chose +0.5, with 356 detections versus 355 for the mean. On the seven audits, this setting recovered 892/958 and flagged 53/3,428 at its own low-false-positive cutoff, compared with the mean's 906 and 55. The ensemble retains mean logits.

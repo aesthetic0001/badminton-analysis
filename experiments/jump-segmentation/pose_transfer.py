@@ -136,7 +136,7 @@ def training_samples(example):
 
 def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=False,
         bwf_labels=None,ranking_weight=0.,temporal_augmentation=False,boundary_weight=1.,
-        reviewed_sources=(),epochs=40,hard_negative_weight=2.,repeat_cadences=None):
+        reviewed_sources=(),epochs=40,hard_negative_weight=2.,hard_positive_weight=1.,repeat_cadences=None):
     if not np.isfinite(boundary_weight) or boundary_weight<=0:
         raise ValueError('Use a positive finite boundary weight.')
     if epochs < 1:
@@ -191,7 +191,8 @@ def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=F
                 model.load_state_dict(state)
                 initial = score(model,holdout,fps=fps)
             fit_classifier(model,*train,epochs=epochs,ranking_weight=ranking_weight,
-                           positive_weights=positive_weights,hard_negative_weight=hard_negative_weight)
+                           positive_weights=positive_weights,hard_negative_weight=hard_negative_weight,
+                           hard_positive_weight=hard_positive_weight)
             results.append({'model':method,'seed':seed,'initial':initial,
                             'fine_tuned':score(model,holdout,fps=fps)})
             torch.save(model.state_dict(),output/f'{method}-{seed}.pt')
@@ -201,6 +202,7 @@ def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=F
               'negative_training_frames':int((train[1]==0).sum()),
               'hard_negative_training_frames':int(train[2].sum()),
               'hard_negative_weight':hard_negative_weight,
+              'hard_positive_weight':hard_positive_weight,
               'soft_boundary_frames':int(((train[1]>0)&(train[1]<1)).sum()),
               'epochs':epochs,
               'ranking_weight':ranking_weight,'temporal_step_factors':[1.,*steps],
@@ -225,6 +227,8 @@ def main():
     parser.add_argument('--epochs',type=int,default=40)
     parser.add_argument('--hard-negative-weight',type=float,default=2.,
                         help='Sampling weight for reviewed shuffles, lunges, and planted strokes.')
+    parser.add_argument('--hard-positive-weight',type=float,default=1.,
+                        help='Relative sampling weight for the lowest-scored quarter of confirmed airborne frames.')
     parser.add_argument('--ranking-weight',type=float,default=0.,
                         help='Penalize high negative logits that outrank low positive logits.')
     parser.add_argument('--temporal-augmentation',action='store_true',
@@ -241,7 +245,7 @@ def main():
         extra_sources=extra,soft_boundaries=args.soft_boundaries,bwf_labels=args.bwf_labels,
         ranking_weight=args.ranking_weight,temporal_augmentation=args.temporal_augmentation,
         boundary_weight=args.boundary_weight,reviewed_sources=reviewed,epochs=args.epochs,
-        hard_negative_weight=args.hard_negative_weight,
+        hard_negative_weight=args.hard_negative_weight,hard_positive_weight=args.hard_positive_weight,
         repeat_cadences=parse_repeat_cadences(parser,args.repeat_cadence))
 
 

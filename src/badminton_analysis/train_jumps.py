@@ -183,14 +183,17 @@ def augment_windows(windows, *, perturb_landmarks=True):
 
 
 def fit_classifier(model, x, y, hard_train, *, epochs, augment=True, perturb_landmarks=True,
-                   ranking_weight=0.,positive_weights=None,hard_negative_weight=2.):
-    """Fit a classifier using reviewed pose windows and weighted hard negatives."""
+                   ranking_weight=0.,positive_weights=None,hard_negative_weight=2.,
+                   hard_positive_weight=1.):
+    """Fit a classifier using reviewed pose windows and configurable hard-example sampling."""
     if epochs < 1:
         raise ValueError('Use at least one training epoch.')
     if not np.isfinite(ranking_weight) or ranking_weight<0:
         raise ValueError('Use a finite, nonnegative ranking weight.')
     if not np.isfinite(hard_negative_weight) or hard_negative_weight<=0:
         raise ValueError('Use a positive finite hard-negative weight.')
+    if not np.isfinite(hard_positive_weight) or hard_positive_weight<1:
+        raise ValueError('Use a finite hard-positive weight of at least one.')
     views = x if x.ndim==4 else None
     if views is not None:
         x = views[:,0]
@@ -199,6 +202,7 @@ def fit_classifier(model, x, y, hard_train, *, epochs, augment=True, perturb_lan
     weights = torch.ones_like(y)
     weights[hard_train] = hard_negative_weight
     positive = y==1
+    mine_positives = hard_positive_weight > 1 and bool(positive.any())
     if positive_weights is not None:
         weights[positive] = positive_weights[positive]
     weights[positive] *= weights[y==0].sum()/weights[positive].sum()
@@ -207,9 +211,15 @@ def fit_classifier(model, x, y, hard_train, *, epochs, augment=True, perturb_lan
         if epoch >= epochs//2 and epoch > 0:
             model.eval()
             with torch.inference_mode():
+                logits = model(x)
                 # Only reviewed grounded examples can be mined as negatives.
-                false_positive = (y == 0) & (model(x) >= 0)
+                false_positive = (y == 0) & (logits >= 0)
+                if mine_positives:
+                    low_positive = positive & (logits <= torch.quantile(logits[positive],.25))
             sampling[false_positive] *= 2
+            if mine_positives:
+                sampling[low_positive] *= hard_positive_weight
+                sampling[positive] *= weights[positive].sum()/sampling[positive].sum()
         model.train()
         for index in torch.multinomial(sampling, len(y), replacement=True).split(64):
             optimizer.zero_grad()
