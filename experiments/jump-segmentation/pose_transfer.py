@@ -40,7 +40,44 @@ def load_sequence(cache,source):
     return PoseSequence(dense,court_valid,**values)
 
 
-def load_examples(cache,source,split,*,soft_boundaries=False,frame_steps=()):
+def remove_repeated_frames(sequence, period, phase):
+    """Return a shorter input sequence and an index for each original frame."""
+    if period < 2 or not 0 <= phase < period:
+        raise ValueError('Repeat cadence needs a period of at least two and a phase within the period.')
+    keep = sequence.frame_ids % period != phase
+    keep[0] = True
+    present = sequence.present
+    keep[1:] |= (~sequence.court_valid[:-1] | ~sequence.court_valid[1:]
+                 | (present[1:] & ~present[:-1]).any(axis=1))
+    compact = PoseSequence(
+        np.arange(int(keep.sum())), sequence.court_valid[keep],
+        sequence.points[keep], sequence.scores[keep], sequence.boxes[keep],
+    )
+    return compact, np.cumsum(keep)-1
+
+
+def add_repeat_cadence_option(parser):
+    parser.add_argument('--repeat-cadence', action='append', nargs=3, default=[],
+                        metavar=('SOURCE', 'PERIOD', 'PHASE'),
+                        help='Skip verified repeated input frames whose source frame number modulo PERIOD is PHASE.')
+
+
+def parse_repeat_cadences(parser, rows):
+    cadences = {}
+    for source, period, phase in rows:
+        if source in cadences:
+            parser.error('Supply a repeat cadence at most once per source.')
+        try:
+            period, phase = int(period), int(phase)
+        except ValueError:
+            parser.error('The repeat period and phase must be integers.')
+        if period < 2 or not 0 <= phase < period:
+            parser.error('The repeat period must be at least two and the phase within that period.')
+        cadences[source] = (period, phase)
+    return cadences
+
+
+def load_examples(cache,source,split,*,soft_boundaries=False,frame_steps=(),repeat_cadence=None):
     """Read a labeled source and optionally create soft targets or augmented pose windows."""
     sequence = load_sequence(cache,source)
     dense = sequence.frame_ids
@@ -70,10 +107,14 @@ def load_examples(cache,source,split,*,soft_boundaries=False,frame_steps=()):
         if targets[start-1,slot]==before and targets[stop,slot]==after:
             targets[start:stop,slot] = np.linspace(before,after,stop-start+2)[1:-1]
     index = np.nonzero(targets != -2)
-    windows = pose_windows(sequence,*index)
+    input_index = index
+    if repeat_cadence is not None:
+        sequence, source_to_compact = remove_repeated_frames(sequence,*repeat_cadence)
+        input_index = source_to_compact[index[0]], index[1]
+    windows = pose_windows(sequence,*input_index)
     keep = windows[..., -1].any(axis=1)
     if frame_steps:
-        windows = temporal_views(sequence,index,windows,frame_steps)
+        windows = temporal_views(sequence,input_index,windows,frame_steps)
     return targets,hard,index,torch.from_numpy(windows),keep
 
 
@@ -95,7 +136,7 @@ def training_samples(example):
 
 def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=False,
         bwf_labels=None,ranking_weight=0.,temporal_augmentation=False,boundary_weight=1.,
-        reviewed_sources=(),epochs=40,hard_negative_weight=2.):
+        reviewed_sources=(),epochs=40,hard_negative_weight=2.,repeat_cadences=None):
     if not np.isfinite(boundary_weight) or boundary_weight<=0:
         raise ValueError('Use a positive finite boundary weight.')
     if epochs < 1:
@@ -120,8 +161,13 @@ def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=F
         raise ValueError('Give each training source only once.')
     if 'finebadminton-0063' in names:
         raise ValueError('FineBadminton 0063 is reserved for the training report.')
+    cadences = repeat_cadences or {}
+    unknown = cadences.keys() - set(names) - {'finebadminton-0063'}
+    if unknown:
+        raise ValueError(f'Repeat cadences do not match a supplied pose cache: {sorted(unknown)}')
     for path,source,label_split in train_sources:
-        example = load_examples(path,source,label_split,soft_boundaries=soft_boundaries,frame_steps=steps)
+        example = load_examples(path,source,label_split,soft_boundaries=soft_boundaries,
+                                frame_steps=steps,repeat_cadence=cadences.get(source))
         samples.append(training_samples(example))
         targets.append(example[0])
     train = tuple(torch.cat(tensors) for tensors in zip(*(sample[:3] for sample in samples)))
@@ -130,7 +176,8 @@ def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=F
         boundary = np.concatenate([airborne_boundary_frames(target,sample[3])
                                    for target,sample in zip(targets,samples)])
         positive_weights = torch.as_tensor(np.where(boundary,boundary_weight,1.),dtype=torch.float32)
-    holdout = load_examples(cache,'finebadminton-0063','validation')
+    holdout = load_examples(cache,'finebadminton-0063','validation',
+                            repeat_cadence=cadences.get('finebadminton-0063'))
     fps = pose_cache_fps(cache,'finebadminton-0063')
     results = []
     output.mkdir(parents=True)
@@ -158,6 +205,7 @@ def run(cache,pilot,bwf_run,output,*,practice,extra_sources=(),soft_boundaries=F
               'epochs':epochs,
               'ranking_weight':ranking_weight,'temporal_step_factors':[1.,*steps],
               'boundary_weight':boundary_weight,
+              'repeat_cadences':cadences,
               'holdout':'finebadminton-0063','results':results}
     (output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))
@@ -185,6 +233,7 @@ def main():
                         help='Weight the first and last two verified airborne frames within positives.')
     parser.add_argument('--soft-boundaries',action='store_true',
                         help='Supervise ambiguous takeoff and landing intervals with soft targets.')
+    add_repeat_cadence_option(parser)
     args = parser.parse_args()
     extra = [(Path(path),source) for path,source in args.extra_source]
     reviewed = [(Path(path),source) for path,source in args.fit_reviewed_source]
@@ -192,7 +241,8 @@ def main():
         extra_sources=extra,soft_boundaries=args.soft_boundaries,bwf_labels=args.bwf_labels,
         ranking_weight=args.ranking_weight,temporal_augmentation=args.temporal_augmentation,
         boundary_weight=args.boundary_weight,reviewed_sources=reviewed,epochs=args.epochs,
-        hard_negative_weight=args.hard_negative_weight)
+        hard_negative_weight=args.hard_negative_weight,
+        repeat_cadences=parse_repeat_cadences(parser,args.repeat_cadence))
 
 
 if __name__ == '__main__':

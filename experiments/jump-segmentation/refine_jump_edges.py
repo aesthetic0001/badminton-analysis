@@ -13,8 +13,8 @@ import torch
 
 from badminton_analysis.jump_benchmark import _boundary_range, evaluate_jump_scores
 from badminton_analysis.jump_decode import recover_jump_boundaries
-from badminton_analysis.jumps import HIP_INDICES, JumpSegmenter, PoseSequence, jump_segments, predict_airborne
-from pose_transfer import load_examples, load_sequence, pose_cache_fps
+from badminton_analysis.jumps import HIP_INDICES, JumpSegmenter, jump_segments, predict_airborne
+from pose_transfer import load_examples, load_sequence, pose_cache_fps, remove_repeated_frames
 from verify_jump_events import JumpEnsemble, fit_verifier, operating_points, propose, refine
 
 
@@ -47,23 +47,6 @@ def _landmark_mean(points,confidence):
                      where=count[...,None]>0)
 
 
-def score_without_repeated_frames(model, sequence, period, phase):
-    """Skip verified periodic repeats in model input and return scores on the source timeline."""
-    if period < 2 or not 0 <= phase < period:
-        raise ValueError('Repeat cadence needs a period of at least two and a phase within the period.')
-    keep = sequence.frame_ids % period != phase
-    keep[0] = True
-    present = sequence.present
-    keep[1:] |= (~sequence.court_valid[:-1] | ~sequence.court_valid[1:]
-                 | (present[1:] & ~present[:-1]).any(axis=1))
-    source_to_unique = np.cumsum(keep)-1
-    unique = PoseSequence(
-        np.arange(int(keep.sum())), sequence.court_valid[keep],
-        sequence.points[keep], sequence.scores[keep], sequence.boxes[keep],
-    )
-    return predict_airborne(model,unique)[source_to_unique]
-
-
 def load_match(cache,name,model,*,repeat_cadence=None):
     targets = load_examples(cache,name,'validation')[0]
     sequence = load_sequence(cache,name)
@@ -75,7 +58,8 @@ def load_match(cache,name,model,*,repeat_cadence=None):
     if repeat_cadence is None:
         scores = predict_airborne(model,sequence)
     else:
-        scores = score_without_repeated_frames(model,sequence,*repeat_cadence)
+        compact, source_to_compact = remove_repeated_frames(sequence,*repeat_cadence)
+        scores = predict_airborne(model,compact)[source_to_compact]
     return Match(targets,scores,pose_cache_fps(cache,name),hips,shoes,heights)
 
 

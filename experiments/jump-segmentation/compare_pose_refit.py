@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from badminton_analysis.jumps import JumpSegmenter
+from pose_transfer import add_repeat_cadence_option, parse_repeat_cadences
 from refine_jump_edges import _totals, fit_verification, load_match, measure, verified_scores
 from verify_jump_events import JumpEnsemble, operating_points, propose
 
@@ -64,24 +65,14 @@ def main():
     parser.add_argument('ensembles', nargs='+', type=Path)
     parser.add_argument('--dev', action='append', nargs=2, required=True, metavar=('POSE_CACHE', 'SOURCE'))
     parser.add_argument('--holdout', action='append', nargs=2, default=[], metavar=('POSE_CACHE', 'SOURCE'))
-    parser.add_argument('--repeat-cadence', action='append', nargs=3, default=[],
-                        metavar=('SOURCE', 'PERIOD', 'PHASE'),
-                        help='Skip verified repeated input frames whose source frame number modulo PERIOD is PHASE.')
+    add_repeat_cadence_option(parser)
     args = parser.parse_args()
     names = [source for _, source in args.dev + args.holdout]
     if len(args.dev) < 3 or len(set(names)) != len(names):
         parser.error('Use at least three development matches and distinct sources for all evaluations.')
-    cadences = {}
-    for source, period, phase in args.repeat_cadence:
-        if source not in names or source in cadences:
-            parser.error('Supply a repeat cadence at most once per evaluated source.')
-        try:
-            period, phase = int(period), int(phase)
-        except ValueError:
-            parser.error('The repeat period and phase must be integers.')
-        if period < 2 or not 0 <= phase < period:
-            parser.error('The repeat period must be at least two and the phase within that period.')
-        cadences[source] = (period, phase)
+    cadences = parse_repeat_cadences(parser,args.repeat_cadence)
+    if cadences.keys() - set(names):
+        parser.error('Repeat cadences must match evaluated sources.')
     torch.set_num_threads(1)
     result = {str(path): compare(path, args.dev, args.holdout, repeat_cadences=cadences)
               for path in args.ensembles}
