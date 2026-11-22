@@ -273,3 +273,47 @@ The pose pipeline already uses a court-validity mask to exclude context from oth
 Both runs used the frozen expanded-reviewed-round1 pose ensemble, the score-only verifier fit on 0063, 0013, 0018, and 0028, and the same score cutoff (0.955325862163521). The court check reached 0.20% false positives and 96.58% airborne-frame recall on 0024.
 
 Use `check_pose_court.py VIDEO POSE_NPZ REFERENCE_FRAME FILTERED_CACHE/SOURCE.npz --minimum 0.40` to generate the filtered cache. Run `compare_pose_refit.py` with the four development sources above and score the original and filtered holdout caches separately. The reference frame for 0024 is 22133.
+
+## Boundary parameter sweep after the broadcast-cut check
+
+The four audited matches below use the frozen pose ensemble and the court check at 0.40 where it changed the pose context. All 2,516 binary labels received scores. Every false flag at the development cutoff fell in a reviewed jump's setup or recovery, including a grounded frame just before takeoff at 16395 on 0024. The four missed frames on 0024 came from the far player's landing at 8923–8925 and the near player's takeoff at 22074. The raw pose scores at those four frames were 0.361, 0.029, 0.003, and 0.372.
+
+| Audit match | Airborne frames found | False flags | Matched jumps with timing allowance |
+| --- | ---: | ---: | ---: |
+| 0022 | 101/108 | 14/415 | 13/16 |
+| 0042 | 146/154 | 10/599 | 14/17 |
+| 0025 | 130/145 | 5/474 | 16/18 |
+| 0024 | 113/117 | 1/504 | 12/13 |
+| Pooled | 490/524 | 30/1,992 | 55/64 |
+
+Leave-one-match-out scoring on 0063, 0013, 0018, and 0028 compared 1,824 combinations of existing verifier settings. The grid crossed native versus 30 fps input windows, proposal thresholds of 0.20, 0.30, 0.40, and 0.50, verifier penalties of 2 and 8, verifier weights of 0.25, 0.50, and 1, and verifier extensions of zero or one frame. Boundary recovery used either no extension or takeoff extensions of 1–3 frames, landing extensions of 1–2 frames, and minimum supporting pose scores of 0.25, 0.40, or 0.55. All extensions are expressed at 30 fps. The existing configuration tied for best at 355/363 development airborne frames under the false-positive limit and was retained. At the retained configuration, a diagnostic pooled audit threshold sweep recovered at most 245/524 airborne frames under 0.5% false positives and needed 318/1,992 false flags to reach 99% recall. Those audit cutoffs were diagnostic.
+
+The existing takeoff and landing refiner was also tested using nested development folds. Tested quantiles were 0.1 through 0.9 on both edges, with and without the existing motion features. The best settings under the development false-positive limit matched the nested baseline at 351/363 airborne frames and 7/1,603 false flags. At the selected score-only quantiles of 0.6 for takeoff and 0.3 for landing, the refiner recovered one additional airborne frame on 0042. Pooled false flags and duration-tolerant event counts were unchanged. The detector still misses both joint targets across these matches.
+
+Two refits held the training sources, seeds, 40-epoch schedule, and architecture fixed while raising the relative weight of the first and last two confirmed airborne frames. Verifier fitting and cutoff selection used the same development matches as the grid above. At each refit's development cutoff for low false positives, both weighting changes reduced recall on the four audit matches.
+
+| Airborne boundary weight | Development airborne frames (of 363) | Audit airborne frames (of 524) | Audit false flags (of 1,992) | Audit matched jumps (of 64) |
+| --- | ---: | ---: | ---: | ---: |
+| 1× | 355 | 490 | 30 | 55 |
+| 2× | 350 | 469 | 25 | 54 |
+| 4× | 351 | 462 | 27 | 51 |
+
+All three settings had eight false flags among 1,603 development negatives. At the separate cutoff selected for 99% development recall, the 1×, 2×, and 4× runs found 512, 509, and 511 audit airborne frames with 81, 96, and 84 false flags, respectively. Use the four-match expanded refit command with `--boundary-weight 2` or `--boundary-weight 4` to reproduce the variants. The 1× weights remain the baseline.
+
+## Mendeley backhand-drive negatives
+
+The four files `labels/mendeley-backhand-drive-{1,2,3,4}.csv` add 152 reviewed negative player-frames across four broadcasts, including planted strokes, shuffles, and recovery steps. They map to source files `backhand_drive (87).mp4`, `(52).mp4`, `(104).mp4`, and `(89).mp4` in `Dataset/Backhand_drive/`. Convert each clip to 30 fps with the FFmpeg `fps=30` filter before applying the intervals. These are negative examples for the pose benchmark, and the same clips appeared as unlabeled footage in the earlier RGB pretraining experiment. [Mendeley source release](https://data.mendeley.com/datasets/3sp4xntp34/1)
+
+Score with the same frozen pose model, verifier, and cutoff as the boundary audit. The calibrated crop on clip 3 mistook the near player for the far player due to a bad court fit. The standard uncalibrated player detector recovered both slots when the court reference was omitted for that clip. The resulting comparison covered all 152 labeled frames with zero false flags. The 30 fps normalized clips include duplicated source frames and the labels are clustered within four excerpts.
+
+## Fresh match after selecting boundary settings
+
+[FineBadminton 0043](labels/finebadminton-0043.csv) shows Kunlavut Vitidsarn and Jonatan Christie on a red court at 30 fps. The review covered twelve jump-smash tags balanced across player sides and match time, three other overhead strokes, and six sampled rally intervals. The footage contained fourteen confirmed jumps, including one without a jump tag. Foot contact was reviewed before scoring. There are 165 airborne frames, 491 negatives, and 94 uncertain player-frames. [FineBadminton source release](https://huggingface.co/datasets/iLearn-Lab/Finebadminton-20K)
+
+| Airborne boundary weight at its development cutoff for low false positives | Airborne frames found (of 165) | False flags (of 491) | Matched jumps (of 14) |
+| --- | ---: | ---: | ---: |
+| 1× | 138 | 5 | 11 |
+| 2× | 115 | 3 | 9 |
+| 4× | 116 | 4 | 10 |
+
+All binary-labeled frames received scores. Every cached frame passed the 0.40 court check, and all five baseline false flags were in grounded recovery. The baseline missed the entire ten-frame near-side jump at 17511–17520. At the baseline cutoff selected for 99% development recall, 0043 reached 156/165 with 9/491 false flags and 13/14 matched jumps with timing allowance. A diagnostic cutoff sweep on 0043 reached at most 102/165 airborne frames below 0.5% false positives. The fresh match remains below the strict recall target and above the false-positive target at the development cutoff.
