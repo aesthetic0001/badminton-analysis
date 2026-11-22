@@ -38,8 +38,16 @@ def evaluate(matches, scores, thresholds):
     return by_cutoff
 
 
-def compare(directory, development, holdouts, *, repeat_cadences=None):
-    model, training = load_ensemble(directory, {source for _, source in development + holdouts})
+def compare(directory, development, holdouts, *, repeat_cadences=None, blend_refit=None):
+    evaluated = {source for _, source in development + holdouts}
+    model, training = load_ensemble(directory, evaluated)
+    if blend_refit is not None:
+        refit_path, weight = blend_refit
+        if not 0 < weight < 1:
+            raise ValueError('The refit blend weight must be between zero and one.')
+        refit, refit_training = load_ensemble(refit_path, evaluated)
+        model = JumpEnsemble([model,refit],weights=(1-weight,weight))
+        training = sorted(set(training) | set(refit_training))
     cadences = repeat_cadences or {}
     dev = [(source, load_match(Path(cache), source, model, repeat_cadence=cadences.get(source)))
            for cache, source in development]
@@ -51,13 +59,16 @@ def compare(directory, development, holdouts, *, repeat_cadences=None):
                    for cache, source in holdouts]
     predicted = [verified_scores(match, propose(match.scores, match.fps, .3), verifier)
                  for _, match in independent]
-    return {
+    report = {
         'training_sources': training,
         'repeat_cadences': cadences,
         'thresholds': thresholds,
         'development': evaluate(dev, out_of_fold, thresholds),
         'holdouts': evaluate(independent, predicted, thresholds),
     }
+    if blend_refit is not None:
+        report['blend_refit'] = {'directory':str(refit_path),'weight':weight}
+    return report
 
 
 def main():
@@ -65,6 +76,8 @@ def main():
     parser.add_argument('ensembles', nargs='+', type=Path)
     parser.add_argument('--dev', action='append', nargs=2, required=True, metavar=('POSE_CACHE', 'SOURCE'))
     parser.add_argument('--holdout', action='append', nargs=2, default=[], metavar=('POSE_CACHE', 'SOURCE'))
+    parser.add_argument('--blend-refit', nargs=2, metavar=('CHECKPOINT_DIRECTORY','WEIGHT'),
+                        help='Blend an existing refit into each ensemble before calibrating the verifier.')
     add_repeat_cadence_option(parser)
     args = parser.parse_args()
     names = [source for _, source in args.dev + args.holdout]
@@ -73,8 +86,18 @@ def main():
     cadences = parse_repeat_cadences(parser,args.repeat_cadence)
     if cadences.keys() - set(names):
         parser.error('Repeat cadences must match evaluated sources.')
+    blend = None
+    if args.blend_refit is not None:
+        directory, value = args.blend_refit
+        try:
+            weight = float(value)
+        except ValueError:
+            parser.error('The refit blend weight must be numeric.')
+        if not 0 < weight < 1:
+            parser.error('The refit blend weight must be between zero and one.')
+        blend = (Path(directory),weight)
     torch.set_num_threads(1)
-    result = {str(path): compare(path, args.dev, args.holdout, repeat_cadences=cadences)
+    result = {str(path): compare(path, args.dev, args.holdout, repeat_cadences=cadences,blend_refit=blend)
               for path in args.ensembles}
     print(json.dumps(result, indent=2))
 

@@ -17,12 +17,16 @@ from pose_transfer import load_examples, load_sequence, pose_cache_fps
 
 class JumpEnsemble(torch.nn.Module):
     """Average the logits of pose checkpoints on the same input windows."""
-    def __init__(self,models):
+    def __init__(self,models,*,weights=None):
         super().__init__()
         self.models = torch.nn.ModuleList(models)
+        self.register_buffer('weights', None if weights is None else torch.as_tensor(weights))
 
     def forward(self,windows):
-        return torch.stack([model(windows) for model in self.models]).mean(0)
+        logits = torch.stack([model(windows) for model in self.models])
+        if self.weights is None:
+            return logits.mean(0)
+        return torch.tensordot(self.weights.to(logits),logits,dims=1)
 
 
 def load_source(cache,source,model,window_fps=None):

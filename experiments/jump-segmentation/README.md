@@ -396,3 +396,33 @@ Of the 47 baseline false flags across those six sources, 28 were in proposals th
 | Learned geometry weights with consistent-landmark support | 80 | 14 | 8 |
 
 At the separate development cutoff for high recall, the score-only verifier recovered all 81 with 41 false flags, and the consistent-landmark penalty recovered all 81 with 29 false flags. A diagnostic sweep of the consistent-landmark penalty on 0046 recovered at most 75/81 below 0.5% false positives. Run the previous geometry command with the 0046 court-checked cache and video, adding `--landmark-support-speed 1.75 --support-penalty 0.80 0.18 4` to reproduce the two consistent-landmark rows. The learned verifier using mean-shoe support also reached 80/81 with 14 flags on 0046. On the six earlier audits, learned geometry with consistent landmarks found 718/763 with 48 flags, compared with 717/763 and 47 flags for the score-only verifier. The landmark option remains experimental.
+
+## Refit on confirmed overhead strokes
+
+The Lucknow excerpts 0044–0046 add 263 airborne and 1,214 grounded frames to the repeat-aware training set. The 1,184 reviewed hard negatives in the expanded set include planted overhead strokes, shuffles, and lunges. The two refits differ only in how heavily they sample those negatives. Both use the original 40-epoch schedule and the same three seeds for each of three initializations. The four development matches and earlier five audit matches are separate from the added training footage.
+
+| Pose run at its development cutoff for low false positives | Development airborne frames (of 363) | Audit airborne frames (of 689) | Audit false flags (of 2,483) |
+| --- | ---: | ---: | ---: |
+| Frozen baseline, repeat-free inference | 355 | 645 | 36 |
+| Same training set with repeat-free inputs | 354 | 645 | 41 |
+| Added 0044–0046, 2× hard-negative sampling | 352 | 624 | 42 |
+| Added 0044–0046, 4× hard-negative sampling | 334 | 603 | 31 |
+| Frozen baseline with 12.5% of the 2× refit logits | 355 | 648 | 36 |
+
+All runs had 8/1,603 development false flags at their cutoffs for low false positives. At their separate cutoffs for 99% development recall, the 2× and 4× refits reduced the audit false-flag count from the frozen baseline's 103 to 79 and 70, with 667 and 665 airborne detections versus the baseline's 671. To select an ensemble blend, compare refit weights from zero to one in steps of 0.125 on development scores. Rank by most airborne frames recovered under the false-positive limit, then fewest flags at the separate cutoff for 99% recall, then the smaller weight. This selected the 2× refit at weight 0.125 before the new match was scored.
+
+To reproduce, add the court-checked 0044, 0045, and 0046 caches with `--fit-reviewed-source` to the repeat-aware training command, retaining `--hard-negative-weight 2` for the selected refit. Use `compare_pose_refit.py` with the original expanded-reviewed-round1 ensemble and `--blend-refit REFIT_DIRECTORY 0.125` to fit and evaluate the score verifier on the combined logits.
+
+[FineBadminton 0051](labels/finebadminton-0051.csv) features Su Li Yang and Weng Hong Yang on a different broadcast court. Twelve jumps, including four without jump tags, were found in eight tagged jump windows, six other overhead windows, and four sampled rally windows. The independent review contains 123 airborne, 397 grounded, and 103 uncertain player-frames. The source is 30 fps and the court-region audit found the repeating image at phase five of the six-frame cycle. The benchmark uses `--repeat-cadence finebadminton-0051 6 5` for all models, with scores mapped back to the labeled frames. [FineBadminton source release](https://huggingface.co/datasets/iLearn-Lab/Finebadminton-20K)
+
+The existing takeoff and landing refiner was also rerun with 0044–0046 added to the four development matches. With nested folds, the score verifier recovered 496/626 airborne frames and had 19 false flags among 2,817 grounded frames. Across 162 combinations of the two edge quantiles and the optional motion features, no setting reached fewer than 0.5% false positives in those out-of-fold predictions. The boundary refiner was kept out of the 0051 comparison.
+
+| Pose run at its development cutoff for low false positives | 0051 airborne frames (of 123) | 0051 false flags (of 397) | Matched jumps (of 12) |
+| --- | ---: | ---: | ---: |
+| Frozen baseline | 118 | 13 | 12 |
+| Same training set with repeat-free inputs | 119 | 12 | 12 |
+| Added overhead footage, 2× hard-negative sampling | 116 | 11 | 11 |
+| Added overhead footage, 4× hard-negative sampling | 109 | 8 | 10 |
+| Frozen baseline with 12.5% of the 2× refit logits | 118 | 13 | 12 |
+
+Every binary label received a score. All five baseline misses were at takeoff. Nine of its 13 false flags were consecutive frames of a far-side planted overhead at 130737–130745. The individually calibrated repeat-free refit reduced that match's false flags by one, but had more false flags than the frozen baseline across the five earlier audits. At the separate cutoffs for 99% development recall, every variant recovered 121/123 on 0051, with 17–20 false flags. The diagnostic cutoff sweep of the baseline on 0051 recovered at most 96/123 below 0.5% false positives. The ensemble blend remains experimental.
