@@ -37,18 +37,22 @@ def evaluate(matches, scores, thresholds):
     return by_cutoff
 
 
-def compare(directory, development, holdouts):
+def compare(directory, development, holdouts, *, repeat_cadences=None):
     model, training = load_ensemble(directory, {source for _, source in development + holdouts})
-    dev = [(source, load_match(Path(cache), source, model)) for cache, source in development]
+    cadences = repeat_cadences or {}
+    dev = [(source, load_match(Path(cache), source, model, repeat_cadence=cadences.get(source)))
+           for cache, source in development]
     dev_matches = [match for _, match in dev]
     verifier, _, out_of_fold = fit_verification(dev_matches)
     thresholds = operating_points([match.verifier_input for match in dev_matches], out_of_fold)
 
-    independent = [(source, load_match(Path(cache), source, model)) for cache, source in holdouts]
+    independent = [(source, load_match(Path(cache), source, model, repeat_cadence=cadences.get(source)))
+                   for cache, source in holdouts]
     predicted = [verified_scores(match, propose(match.scores, match.fps, .3), verifier)
                  for _, match in independent]
     return {
         'training_sources': training,
+        'repeat_cadences': cadences,
         'thresholds': thresholds,
         'development': evaluate(dev, out_of_fold, thresholds),
         'holdouts': evaluate(independent, predicted, thresholds),
@@ -60,12 +64,27 @@ def main():
     parser.add_argument('ensembles', nargs='+', type=Path)
     parser.add_argument('--dev', action='append', nargs=2, required=True, metavar=('POSE_CACHE', 'SOURCE'))
     parser.add_argument('--holdout', action='append', nargs=2, default=[], metavar=('POSE_CACHE', 'SOURCE'))
+    parser.add_argument('--repeat-cadence', action='append', nargs=3, default=[],
+                        metavar=('SOURCE', 'PERIOD', 'PHASE'),
+                        help='Skip verified repeated input frames whose source frame number modulo PERIOD is PHASE.')
     args = parser.parse_args()
     names = [source for _, source in args.dev + args.holdout]
     if len(args.dev) < 3 or len(set(names)) != len(names):
         parser.error('Use at least three development matches and distinct sources for all evaluations.')
+    cadences = {}
+    for source, period, phase in args.repeat_cadence:
+        if source not in names or source in cadences:
+            parser.error('Supply a repeat cadence at most once per evaluated source.')
+        try:
+            period, phase = int(period), int(phase)
+        except ValueError:
+            parser.error('The repeat period and phase must be integers.')
+        if period < 2 or not 0 <= phase < period:
+            parser.error('The repeat period must be at least two and the phase within that period.')
+        cadences[source] = (period, phase)
     torch.set_num_threads(1)
-    result = {str(path): compare(path, args.dev, args.holdout) for path in args.ensembles}
+    result = {str(path): compare(path, args.dev, args.holdout, repeat_cadences=cadences)
+              for path in args.ensembles}
     print(json.dumps(result, indent=2))
 
 

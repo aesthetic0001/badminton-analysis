@@ -1,0 +1,4 @@
+player,start_frame,stop_frame,state,split,kind
+near,6,13,no_correction,validation,planted_stroke
+near,13,35,no_correction,validation,recovery
+near,35,47,no_correction,validation,rally_play

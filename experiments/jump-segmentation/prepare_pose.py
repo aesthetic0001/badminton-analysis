@@ -20,7 +20,7 @@ from badminton_analysis.train_rgb_mgmae import _decode, _labels
 
 
 def extract(video, frames, detector, estimator, output, *, practice=False, reference_frame=None,
-            labels=None):
+            labels=None, practice_max_foot_y=.89):
     capture = cv2.VideoCapture(str(video),cv2.CAP_FFMPEG,[cv2.CAP_PROP_N_THREADS,3])
     try:
         if not capture.isOpened():
@@ -52,7 +52,7 @@ def extract(video, frames, detector, estimator, output, *, practice=False, refer
         capture.release()
 
     if practice:
-        sampled, detections = practice_boxes(detector,images)
+        sampled, detections = practice_boxes(detector,images,max_foot_y=practice_max_foot_y)
     elif court is not None:
         sampled, detections = calibrated_boxes(detector,images,frames,court)
     else:
@@ -100,8 +100,10 @@ def calibrated_boxes(detector,images,frames,court):
     return sampled,np.array(detections)
 
 
-def practice_boxes(detector,images):
+def practice_boxes(detector,images,*,max_foot_y=.89):
     """Select the foreground player in the labeled portrait practice clips."""
+    if not .56 < max_foot_y <= 1.:
+        raise ValueError('The lower portrait crop limit must be between 0.56 and 1.')
     height,width = images.shape[1:3]
     sampled = np.arange(0,len(images),3)
     predictions = detector.predict([images[i] for i in sampled],imgsz=704,classes=[0],
@@ -109,7 +111,7 @@ def practice_boxes(detector,images):
     detections = np.full((len(sampled),2,4),np.nan)
     for i,prediction in enumerate(predictions):
         box = prediction.boxes.xyxy.numpy()
-        good = ((box[:,3] > .56*height) & (box[:,3] < .89*height)
+        good = ((box[:,3] > .56*height) & (box[:,3] < max_foot_y*height)
                 & (box[:,0] > .03*width) & (box[:,2] < .97*width))
         eligible = box[good]
         if len(eligible):
@@ -122,7 +124,7 @@ def main():
     parser.add_argument('output',type=Path)
     parser.add_argument('rgb_caches',type=Path,nargs='*')
     parser.add_argument('--sources',type=Path,action='append',default=[],
-                        help='Prepare reviewed pose windows from a video and label manifest.')
+                        help='Prepare reviewed pose windows from a manifest. Use practice: true for portrait practice clips.')
     parser.add_argument('--detector',type=Path,default=Path('yolo26m.pt'))
     parser.add_argument('--pose-model',type=Path,required=True)
     parser.add_argument('--practice-directory',type=Path)
@@ -160,8 +162,14 @@ def main():
             output = args.output/f'{name}.npz'
             if output.exists():
                 raise FileExistsError(output)
+            practice = item.get('practice', False)
+            if not isinstance(practice, bool) or (practice and name in references):
+                raise ValueError(f'Choose either practice or a court reference for {name}.')
+            if 'practice_max_foot_y' in item and not practice:
+                raise ValueError(f'A practice crop limit requires practice mode for {name}.')
             extract(manifest.parent/item['video'],None,detector,estimator,output,
-                    reference_frame=references.get(name),labels=manifest.parent/item['labels'])
+                    practice=practice,reference_frame=references.get(name),labels=manifest.parent/item['labels'],
+                    practice_max_foot_y=item.get('practice_max_foot_y', .89))
     if args.practice_directory:
         for video in sorted(args.practice_directory.glob('defence-*.mp4')):
             output = args.output/f'mendeley-{video.stem}.npz'

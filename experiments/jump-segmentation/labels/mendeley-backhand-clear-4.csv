@@ -1,0 +1,5 @@
+player,start_frame,stop_frame,state,split,kind
+near,6,14,no_correction,validation,planted_stroke
+near,14,24,no_correction,validation,recovery
+near,24,28,uncertain,validation,possible_hop
+near,28,30,no_correction,validation,shuffle

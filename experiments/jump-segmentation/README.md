@@ -317,3 +317,25 @@ Score with the same frozen pose model, verifier, and cutoff as the boundary audi
 | 4× | 116 | 4 | 10 |
 
 All binary-labeled frames received scores. Every cached frame passed the 0.40 court check, and all five baseline false flags were in grounded recovery. The baseline missed the entire ten-frame near-side jump at 17511–17520. At the baseline cutoff selected for 99% development recall, 0043 reached 156/165 with 9/491 false flags and 13/14 matched jumps with timing allowance. A diagnostic cutoff sweep on 0043 reached at most 102/165 airborne frames below 0.5% false positives. The fresh match remains below the strict recall target and above the false-positive target at the development cutoff.
+
+## Repeated broadcast frames in pose windows
+
+Frame differencing on the court region showed that several nominally 30 fps broadcasts repeat one image in each six-frame cycle. The repeated source frame satisfies `frame % 6 == 1` on 0042 and 0043, and `frame % 6 == 5` on 0063. The phase varies by video. Near and far player slots were present throughout the missed 0043 jump at 17511–17520. The input included repeated images at 17515 and 17521, and the tracked hip moved down the image during most of the jump as the player advanced toward the camera.
+
+The optional cadence setting removes the repeated images when assembling the existing 13-frame pose inputs. It maps the predicted scores back to all original source frames before verification and event scoring. This preserves native labels, time offsets, score coverage, and the court validity mask at gaps. The model checkpoint is unchanged. At the original verifier and cutoff, the setting recovered seven of the ten previously missed airborne frames on 0043.
+
+| Frozen pose ensemble at its development cutoff | Airborne frames (of 689) | False flags (of 2,483) | Matched jumps (of 78) |
+| --- | ---: | ---: | ---: |
+| Original input windows | 628 | 35 | 66 |
+| Skip repeats on 0042 and 0043, original verifier and cutoff | 643 | 36 | 68 |
+| Skip repeats on 0063, 0042, and 0043, refit verifier and recalibrate | 645 | 36 | 68 |
+
+The pooled audit covers 0022, 0024, 0025, 0042, and 0043. The second row raised detections from 146 to 150 on 0042 and from 138 to 149 on 0043. The only additional false flag was on 0042. The recalibrated third row uses the usual four development matches and reaches 93.61% strict recall and 1.45% false positives on that audit. At the development cutoff for higher recall, it reached 671/689 with 103 false flags. All binary labels received scores. A 1.2-frame spacing adjustment on 0042 and 0043 recovered more airborne frames at the original cutoff, with eight more false flags on 0042. The repeat-removal configuration remains an offline experiment pending validation on new broadcast footage.
+
+Run `compare_pose_refit.py` with the same caches and development sources as above and add `--repeat-cadence finebadminton-0042 6 1 --repeat-cadence finebadminton-0043 6 1`. For the recalibrated row, also add `--repeat-cadence finebadminton-0063 6 5`. Use this override for a source only after checking its actual repetition pattern.
+
+## Mendeley portrait stroke negatives
+
+Six portrait excerpts add 186 reviewed grounded player-frames and nine ambiguous frames. The files `labels/mendeley-backhand-clear-{1,2,3,4,5}.csv` use the same numbered clips under `Dataset/Backhand_clear/`, and `labels/mendeley-forehand-smash-1.csv` uses `Dataset/Forehand_Smash/Forehand_Smash (1).mp4`. The reviewed figures use the near player and copies normalized with the FFmpeg filter `fps=30,scale=960:-2`. These excerpts share a camera setup, so they provide ground-contact examples of different strokes and recovery steps in that view. [Mendeley source release](https://data.mendeley.com/datasets/3sp4xntp34/1)
+
+Use `"practice": true` in each source manifest entry for `prepare_pose.py`. Add `"practice_max_foot_y": 0.94` on backhand clear 3 to cover the foreground player at the bottom of the portrait view. This restored scores for nine previously unscored labels. With full coverage, the frozen pose baseline had four false flags among 186 negatives, all on frames 10–13 during a grounded shuffle in backhand clear 3. The other five clips had zero false flags at the same cutoff.
