@@ -240,3 +240,21 @@ In a follow-up on 0022 and 0028, the selected visual blend recovered 186/194 air
 Six of the extra false flags came from a slight foot lift around a slice drop at 83253–83258. At its recall cutoff, the blend reached 153/154 with 93 false flags. A cutoff sweep on 0042 required 36 false flags to retain that recall and recovered 36/154 with at most two false flags. The visual blend remains experimental.
 
 Use `prepare_shoe_rgb.py POSE_NPZ VIDEO VISUAL_CACHE/SOURCE.npz` to extract the shoe clips. Run `compare_shoe_rgb.py train VISUAL_CACHE OUTPUT --source POSE_CACHE SOURCE LABEL_SPLIT` for the seven pose-training sources 0001, 0057, 0070, 0003, 0010, 0033, and 0009. Use the split stored in each source's label CSV. Pass the output directory and the expanded pose checkpoint directory to `compare_shoe_rgb.py compare VISUAL_CACHE VISUAL_MODELS POSE_MODELS --dev POSE_CACHE SOURCE --holdout POSE_CACHE SOURCE`, repeating the match arguments.
+
+## Reviewed recovery shuffles and hard-negative sampling
+
+Three previously reviewed matches, 0022, 0036, and 0042, were added to the nine-model pose refit. The new training set contains 1,171 airborne frames, 4,034 negatives, and 507 soft targets. Of the negatives, 648 were classified as shuffles, lunges, or planted strokes. The nine-frame planted recovery at 61144–61152 on 0036 and the slight foot lift around 83253–83258 on 0042 are now marked as hard negatives. These edits preserve the frame-level airborne labels.
+
+Two refits used the same data, architecture, seeds, and 40-epoch schedule. The only difference was the sampling weight assigned to reviewed hard negatives, 2 or 4 times the initial weight of an ordinary negative. The development matches were 0063, 0013, 0018, and 0028. At their development cutoffs for low false positives, the earlier refit recovered 355/363 airborne frames, the 2× refit recovered 350, and the 4× refit recovered 335. All three had 8/1,603 false flags. At the development recall target, the 2× refit reduced false flags from 36 to 22. The 4× refit had 34.
+
+[FineBadminton 0025](labels/finebadminton-0025.csv) is a previously unused match between Gregoria Mariska Tunjung and Chen Yu Fei, at 24.72 fps. Review covered shot candidates and six sampled rally intervals before scoring. It identified 18 jumps, including five without a jump tag, with 145 confirmed airborne frames, 474 negatives, and 66 uncertain frames. All binary-labeled frames received predictions. [FineBadminton release](https://huggingface.co/datasets/iLearn-Lab/Finebadminton-20K)
+
+| Ensemble at its development cutoff for low false positives | Airborne frames (of 145) | False flags (of 474) | Matched jumps (of 18) |
+| --- | ---: | ---: | ---: |
+| Earlier refit | 130 | 11 | 16 |
+| Expanded refit, 2× hard-negative weight | 117 | 9 | 14 |
+| Expanded refit, 4× hard-negative weight | 122 | 9 | 15 |
+
+Six of the earlier refit's false flags fell immediately after the switch from a player close-up to the wide court view at frame 11579. For a diagnostic rescore, mark the six decoded context frames 11573–11578 as invalid in the holdout sequence's existing `court_valid` mask. At the frozen cutoffs, all three models then had 5/474 false flags with the same airborne counts. The audit used a manually verified camera cut on the scored match. The remaining false flags fell near takeoff and landing. This match still falls short of the joint recall and false-positive targets.
+
+For the refits, add 0022, 0036, and 0042 to the earlier `--fit-reviewed-source` arguments and pass `--hard-negative-weight 2` or `--hard-negative-weight 4`. Evaluate with `compare_pose_refit.py` on the four development matches above and the 0025 holdout.

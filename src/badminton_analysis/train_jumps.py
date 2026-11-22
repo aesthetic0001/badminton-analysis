@@ -183,19 +183,21 @@ def augment_windows(windows, *, perturb_landmarks=True):
 
 
 def fit_classifier(model, x, y, hard_train, *, epochs, augment=True, perturb_landmarks=True,
-                   ranking_weight=0.,positive_weights=None):
+                   ranking_weight=0.,positive_weights=None,hard_negative_weight=2.):
     """Fit a classifier using reviewed pose windows and weighted hard negatives."""
     if epochs < 1:
         raise ValueError('Use at least one training epoch.')
     if not np.isfinite(ranking_weight) or ranking_weight<0:
         raise ValueError('Use a finite, nonnegative ranking weight.')
+    if not np.isfinite(hard_negative_weight) or hard_negative_weight<=0:
+        raise ValueError('Use a positive finite hard-negative weight.')
     views = x if x.ndim==4 else None
     if views is not None:
         x = views[:,0]
     optimizer = torch.optim.AdamW(model.parameters(), lr=.001, weight_decay=.01)
     criterion = torch.nn.BCEWithLogitsLoss()
     weights = torch.ones_like(y)
-    weights[hard_train] = 2
+    weights[hard_train] = hard_negative_weight
     positive = y==1
     if positive_weights is not None:
         weights[positive] = positive_weights[positive]

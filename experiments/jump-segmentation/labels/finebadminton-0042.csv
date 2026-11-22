@@ -87,9 +87,9 @@ far,65281,65282,uncertain,validation,takeoff
 far,65282,65295,airborne,validation,jump
 far,65295,65297,uncertain,validation,landing
 far,65297,65300,grounded,validation,recovery
-far,83239,83254,no_correction,validation,rally_play
+far,83239,83253,no_correction,validation,rally_play
 near,83239,83264,no_correction,validation,rally_play
-far,83254,83264,no_correction,validation,shuffle
+far,83253,83264,no_correction,validation,shuffle
 far,83362,83367,no_correction,validation,setup
 far,83367,83368,uncertain,validation,takeoff
 far,83368,83379,airborne,validation,jump

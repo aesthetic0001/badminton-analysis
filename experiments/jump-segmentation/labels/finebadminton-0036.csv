@@ -80,8 +80,9 @@ near,60551,60563,airborne,validation,jump
 near,60563,60565,uncertain,validation,landing
 near,60565,60573,grounded,validation,recovery
 far,61140,61165,no_correction,validation,sampled_rally_play
-near,61140,61147,no_correction,validation,sampled_rally_play
-near,61147,61162,no_correction,validation,setup
+near,61140,61144,no_correction,validation,sampled_rally_play
+near,61144,61153,no_correction,validation,shuffle
+near,61153,61162,no_correction,validation,setup
 near,61162,61163,uncertain,validation,takeoff
 near,61163,61170,airborne,validation,untagged_jump
 near,61170,61172,uncertain,validation,landing
