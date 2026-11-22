@@ -12,7 +12,7 @@ import torch
 
 from badminton_analysis.jumps import JumpSegmenter, _project, projection_from_pole_tops
 from badminton_analysis.positions import court_length_m, court_width_m, detect_court
-from pose_transfer import add_repeat_cadence_option, parse_repeat_cadences
+from pose_transfer import add_repeat_cadence_option, load_sequence, parse_repeat_cadences
 from refine_jump_edges import load_match, verified_scores
 from verify_jump_events import JumpEnsemble, fit_verifier, propose, report
 
@@ -93,7 +93,21 @@ def _anchor(shoes, observed, first, step, count):
     return None
 
 
-def motion_features(match, camera, player, start, stop):
+def _support_fraction(movement, limit, *, consistent_landmark):
+    visible = np.isfinite(movement)
+    slow = visible & (movement < limit)
+    if consistent_landmark:
+        measurements = visible.sum(axis=0)
+        usable = measurements >= max(2, .60 * len(movement))
+        fraction = np.max(slow.sum(axis=0)[usable] / measurements[usable]) if usable.any() else 0.
+    else:
+        usable = visible.any(axis=1)
+        fraction = slow.any(axis=1)[usable].mean() if usable.any() else 0.
+    return float(usable.any()), fraction
+
+
+def motion_features(match, camera, player, start, stop, *,
+                    landmarks=None, support_speed=.75, support_lag=1):
     """Measure arc fit and foot support using contiguous pose observations."""
     observed = np.isfinite(match.scores[:, player])
     shoes = match.shoes[:, player]
@@ -122,19 +136,22 @@ def motion_features(match, camera, player, start, stop):
     ground_error, _ = fit_arc(*args, rise=0.)
     flight_error, _ = fit_arc(*args, rise=rise)
     free_error, free_rise = fit_arc(*args, rise=None)
-    shoe_xy = project_to_court(camera.image_to_ground, shoes[span])
-    movement = np.linalg.norm(np.diff(shoe_xy, axis=0), axis=-1) * match.fps
-    slowest = np.min(np.where(np.isfinite(movement), movement, np.inf), axis=1)
-    supported = slowest[np.isfinite(slowest)]
+    support_points = shoes[span] if landmarks is None else landmarks[span, player]
+    support_points = np.where(observed[span, None, None], support_points, np.nan)
+    shoe_xy = project_to_court(camera.image_to_ground, support_points)
+    movement = np.linalg.norm(shoe_xy[support_lag:] - shoe_xy[:-support_lag], axis=-1)
+    feet_available, support = _support_fraction(movement * (match.fps / support_lag),
+                                                support_speed, consistent_landmark=landmarks is not None)
     features = np.array([1., ground_error, flight_error, ground_error - flight_error,
-                         free_error, free_rise, float(len(supported) > 0),
-                         (supported < .75).mean() if len(supported) else 0.])
+                         free_error, free_rise, feet_available, support])
     return features if np.isfinite(features).all() else missing
 
 
-def candidates(match, camera):
+def candidates(match, camera, *, landmarks=None, support_speed=.75, support_lag=1):
     spans, features = propose(match.scores, match.fps, .3)
-    motion = np.array([motion_features(match, camera, *span) for span in spans]).reshape(-1, 8)
+    motion = np.array([motion_features(match, camera, *span, landmarks=landmarks,
+                                      support_speed=support_speed, support_lag=support_lag)
+                       for span in spans]).reshape(-1, 8)
     return (spans, features), (spans, np.column_stack((features, motion)))
 
 
@@ -177,6 +194,8 @@ def main():
     parser.add_argument('--support-penalty', type=float, nargs=3,
                         metavar=('MIN_SUPPORT_FRACTION', 'MAX_RISE_M', 'LOGIT_PENALTY'),
                         help='Also evaluate a penalty for candidate jumps with sustained foot support and low rise.')
+    parser.add_argument('--landmark-support-speed', type=float, metavar='METRES_PER_SECOND',
+                        help='Measure support using one consistent heel or toe landmark over two frames.')
     add_repeat_cadence_option(parser)
     args = parser.parse_args()
     names = [name for _, name, _ in args.dev]
@@ -189,6 +208,9 @@ def main():
         support, rise, penalty = args.support_penalty
         if not (np.isfinite(args.support_penalty).all() and 0 < support <= 1 and rise >= 0 and penalty > 0):
             parser.error('Use a support fraction in (0, 1], a nonnegative maximum rise, and a positive penalty.')
+    if args.landmark_support_speed is not None and (
+            not np.isfinite(args.landmark_support_speed) or args.landmark_support_speed <= 0):
+        parser.error('The landmark support speed must be positive and finite.')
 
     torch.set_num_threads(1)
     cv2.setNumThreads(2)
@@ -205,7 +227,13 @@ def main():
     def prepare(cache, name, video):
         match = load_match(Path(cache), name, model, repeat_cadence=cadence.get(name))
         camera = calibrate(video, references[name], poles[name])
-        return match, candidates(match, camera)
+        if args.landmark_support_speed is None:
+            return match, candidates(match, camera)
+        sequence = load_sequence(Path(cache),name)
+        confidence = sequence.scores[:,:,8:14]
+        landmarks = np.where((confidence >= .35)[...,None],sequence.points[:,:,8:14],np.nan)
+        return match, candidates(match, camera, landmarks=landmarks,
+                                 support_speed=args.landmark_support_speed, support_lag=2)
 
     development = [prepare(*source) for source in args.dev]
     holdout = prepare(*args.holdout)
@@ -214,6 +242,8 @@ def main():
     if args.support_penalty is not None:
         result['support_parameters'] = args.support_penalty
         result['foot_support'] = compare(development, holdout, 0, support_penalty=args.support_penalty)
+    if args.landmark_support_speed is not None:
+        result['landmark_support_speed'] = args.landmark_support_speed
     print(json.dumps(result, indent=2))
 
 
