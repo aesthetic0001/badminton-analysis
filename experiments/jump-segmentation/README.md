@@ -426,3 +426,22 @@ The existing takeoff and landing refiner was also rerun with 0044–0046 added t
 | Frozen baseline with 12.5% of the 2× refit logits | 118 | 13 | 12 |
 
 Every binary label received a score. All five baseline misses were at takeoff. Nine of its 13 false flags were consecutive frames of a far-side planted overhead at 130737–130745. The individually calibrated repeat-free refit reduced that match's false flags by one, but had more false flags than the frozen baseline across the five earlier audits. At the separate cutoffs for 99% development recall, every variant recovered 121/123 on 0051, with 17–20 false flags. The diagnostic cutoff sweep of the baseline on 0051 recovered at most 96/123 below 0.5% false positives. The ensemble blend remains experimental.
+
+## Player-box sampling and pose smoothing
+
+The court-calibrated pose extractor normally runs the player detector on every second cached frame and uses the nearest available box for each RTMPose call. The comparison used `prepare_pose.py --court-detection-stride 1` to estimate a new box on every cached frame for 0045, 0046, and the original 0051 review windows. The frozen baseline, court checks, verified repeat patterns, score verifier, and development cutoff stayed fixed. Both extractions scored every binary label.
+
+| Audited match | Airborne frames, stride 2 | Airborne frames, stride 1 | False flags, stride 2 | False flags, stride 1 |
+| --- | ---: | ---: | ---: | ---: |
+| 0045 | 90/95 | 90/95 | 17/465 | 18/465 |
+| 0046 | 79/81 | 78/81 | 22/408 | 21/408 |
+| 0051 | 118/123 | 120/123 | 13/397 | 14/397 |
+| Pooled | 287/299 | 288/299 | 52/1,270 | 53/1,270 |
+
+On the planted 0051 overhead at 130737–130745, median one-frame displacement fell from 21–35 pixels to 4–6 pixels across the six heel and toe landmarks with per-frame crops. The classifier continued to flag the stroke, including when the existing verifier used consistent heel or toe support. At the development cutoff for low false positives, the learned geometry verifier gave 118/123 airborne and 12/397 false flags with stride 2, versus 120/123 and 14/397 with stride 1. The extractor retains the stride-2 default.
+
+Eight offline smoothing settings varied centered median versus triangular-weighted mean filters, three versus five frames, and feet versus all keypoints. The filters used same-view confident landmarks after known repeats were removed. The verifier was recalibrated on the same four development matches for each setting. Across nine audited matches at the development cutoff for low false positives, the unfiltered baseline found 1,015/1,075 airborne frames and flagged 96/4,094 grounded frames. The three-frame median on feet gave the fewest false flags (82), with 990 airborne detections. The three-frame median on all landmarks recovered 1,016 airborne frames with 100 false flags. The five-frame median on all landmarks also recovered 1,016 with 106 false flags. All eight smoothing settings fell short of both strict targets.
+
+For the supplemental 0051 audit, seven additional overhead windows were selected by shot type and player side without viewing predictions. These included two genuine jumps without jump tags. The review added 18 confirmed airborne, 130 grounded, and 62 uncertain frames. On these new windows the frozen baseline at its previous cutoff found all 18 airborne frames and flagged 1/130 grounded frames, immediately after landing. Combined with the original review, it found 136/141 airborne frames and flagged 14/527 grounded frames. All 14 jumps matched with timing allowance. The original 0051 label counts and box-stride row refer to the version in commit `d524dbe`. To assemble the expanded evaluation cache with the same stride parity, extract the original and supplemental windows separately and concatenate the two disjoint sets of pose and court-validity rows in source-frame order.
+
+A controlled training rerun omitted soft targets for uncertain contact frames. It kept the same training sources, confirmed labels, seeds, cadence handling, and epoch schedule as the repeat-free refit. On the nine original audits, both runs recovered 1,016/1,075 at their own development cutoffs for low false positives. Omitting the soft targets reduced false flags from 109 to 100 and increased timing-tolerant matches from 106 to 108. The frozen baseline recovered 1,015 with 96 false flags and 105 timing-tolerant matches. The confirmed-only rerun remains short of the strict targets.

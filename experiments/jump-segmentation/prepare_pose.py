@@ -20,7 +20,7 @@ from badminton_analysis.train_rgb_mgmae import _decode, _labels
 
 
 def extract(video, frames, detector, estimator, output, *, practice=False, reference_frame=None,
-            labels=None, practice_max_foot_y=.89):
+            labels=None, practice_max_foot_y=.89, court_detection_stride=2):
     capture = cv2.VideoCapture(str(video),cv2.CAP_FFMPEG,[cv2.CAP_PROP_N_THREADS,3])
     try:
         if not capture.isOpened():
@@ -54,7 +54,7 @@ def extract(video, frames, detector, estimator, output, *, practice=False, refer
     if practice:
         sampled, detections = practice_boxes(detector,images,max_foot_y=practice_max_foot_y)
     elif court is not None:
-        sampled, detections = calibrated_boxes(detector,images,frames,court)
+        sampled, detections = calibrated_boxes(detector,images,frames,court,stride=court_detection_stride)
     else:
         resized = np.array([resize_frame(frame,SOURCE_SIZE) for frame in images])
         sampled,detections = _detect(detector,resized)
@@ -82,8 +82,10 @@ def extract(video, frames, detector, estimator, output, *, practice=False, refer
     print(f'{output.stem}: {np.isfinite(boxes).all(axis=2).sum()} poses in {len(frames)} frames',flush=True)
 
 
-def calibrated_boxes(detector,images,frames,court):
-    sampled = np.arange(0,len(images),2)
+def calibrated_boxes(detector,images,frames,court,*,stride=2):
+    if stride < 1:
+        raise ValueError('The court detection stride must be positive.')
+    sampled = np.arange(0,len(images),stride)
     detections = []
     previous = np.full((2,4),np.nan)
     last = np.full(2,frames[0]-100)
@@ -130,9 +132,13 @@ def main():
     parser.add_argument('--practice-directory',type=Path)
     parser.add_argument('--court-reference-frames',type=Path,
                         help='JSON mapping a fixed-camera source name to its court calibration frame.')
+    parser.add_argument('--court-detection-stride',type=int,default=2,
+                        help='Run the box detector on every nth cached frame for court-calibrated footage.')
     args = parser.parse_args()
     if not (args.rgb_caches or args.sources or args.practice_directory):
         parser.error('Supply an RGB cache, a source manifest, or practice clips.')
+    if args.court_detection_stride < 1 or (args.court_detection_stride != 2 and args.court_reference_frames is None):
+        parser.error('A custom court detection stride requires a positive value and court references.')
     args.output.mkdir(parents=True,exist_ok=True)
     cv2.setNumThreads(2)
     torch.set_num_threads(4)
@@ -153,7 +159,7 @@ def main():
             with np.load(directory/f'{name}.npz',allow_pickle=False) as data:
                 frames = np.unique(data['centers'][:,None]+np.arange(FRAMES)-CENTER)
             extract(metadata['video']['path'],frames,detector,estimator,output,
-                    reference_frame=references.get(name))
+                    reference_frame=references.get(name),court_detection_stride=args.court_detection_stride)
     for manifest in args.sources:
         for item in json.loads(manifest.read_text())['sources']:
             name = item['name']
@@ -169,7 +175,8 @@ def main():
                 raise ValueError(f'A practice crop limit requires practice mode for {name}.')
             extract(manifest.parent/item['video'],None,detector,estimator,output,
                     practice=practice,reference_frame=references.get(name),labels=manifest.parent/item['labels'],
-                    practice_max_foot_y=item.get('practice_max_foot_y', .89))
+                    practice_max_foot_y=item.get('practice_max_foot_y', .89),
+                    court_detection_stride=args.court_detection_stride)
     if args.practice_directory:
         for video in sorted(args.practice_directory.glob('defence-*.mp4')):
             output = args.output/f'mendeley-{video.stem}.npz'
