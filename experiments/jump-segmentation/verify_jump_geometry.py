@@ -7,10 +7,12 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from scipy.special import expit, logit
 import torch
 
 from badminton_analysis.jumps import JumpSegmenter, _project, projection_from_pole_tops
 from badminton_analysis.positions import court_length_m, court_width_m, detect_court
+from pose_transfer import add_repeat_cadence_option, parse_repeat_cadences
 from refine_jump_edges import load_match, verified_scores
 from verify_jump_events import JumpEnsemble, fit_verifier, propose, report
 
@@ -136,15 +138,33 @@ def candidates(match, camera):
     return (spans, features), (spans, np.column_stack((features, motion)))
 
 
-def compare(development, holdout, variant):
+def penalize_supported_spans(scores, proposals, min_support, max_rise, penalty):
+    """Lower confidence for spans with sustained foot support and little fitted rise."""
+    adjusted = scores.copy()
+    for (player,start,stop),features in zip(*proposals):
+        valid_fit, _, _, _, _, rise, valid_feet, support = features[-8:]
+        if valid_fit and valid_feet and support >= min_support and rise <= max_rise:
+            span = adjusted[start:stop,player]
+            adjusted[start:stop,player] = expit(logit(span.clip(1e-6,1.-1e-6))-penalty)
+    return adjusted
+
+
+def compare(development, holdout, variant, *, support_penalty=None):
     examples = [(match.verifier_input, proposals[variant]) for match, proposals in development]
+
+    def predict(match, proposals, verifier):
+        scores = verified_scores(match, proposals[variant], verifier)
+        if support_penalty is not None:
+            scores = penalize_supported_spans(scores, proposals[1], *support_penalty)
+        return scores
+
     predictions = []
     for index, (match, proposals) in enumerate(development):
         verifier = fit_verifier(examples[:index] + examples[index + 1:], 2.)
-        predictions.append(verified_scores(match, proposals[variant], verifier))
+        predictions.append(predict(match, proposals, verifier))
     verifier = fit_verifier(examples, 2.)
     match, proposals = holdout
-    scores = verified_scores(match, proposals[variant], verifier)
+    scores = predict(match, proposals, verifier)
     return report([example[0] for example in examples], predictions, match.verifier_input, scores)
 
 
@@ -154,10 +174,21 @@ def main():
     parser.add_argument('--dev', action='append', nargs=3, required=True,
                         metavar=('POSE_CACHE', 'SOURCE', 'VIDEO'))
     parser.add_argument('--holdout', nargs=3, required=True, metavar=('POSE_CACHE', 'SOURCE', 'VIDEO'))
+    parser.add_argument('--support-penalty', type=float, nargs=3,
+                        metavar=('MIN_SUPPORT_FRACTION', 'MAX_RISE_M', 'LOGIT_PENALTY'),
+                        help='Also evaluate a penalty for candidate jumps with sustained foot support and low rise.')
+    add_repeat_cadence_option(parser)
     args = parser.parse_args()
     names = [name for _, name, _ in args.dev]
     if len(names) < 3 or len(set(names)) != len(names) or args.holdout[1] in names:
         parser.error('Supply at least three distinct development matches and a separate holdout.')
+    cadence = parse_repeat_cadences(parser,args.repeat_cadence)
+    if cadence.keys() - set(names) - {args.holdout[1]}:
+        parser.error('Repeat cadences must match evaluated sources.')
+    if args.support_penalty is not None:
+        support, rise, penalty = args.support_penalty
+        if not (np.isfinite(args.support_penalty).all() and 0 < support <= 1 and rise >= 0 and penalty > 0):
+            parser.error('Use a support fraction in (0, 1], a nonnegative maximum rise, and a positive penalty.')
 
     torch.set_num_threads(1)
     cv2.setNumThreads(2)
@@ -172,7 +203,7 @@ def main():
     poles = json.loads(reference.with_name('jump-projection-poles.json').read_text())
 
     def prepare(cache, name, video):
-        match = load_match(Path(cache), name, model)
+        match = load_match(Path(cache), name, model, repeat_cadence=cadence.get(name))
         camera = calibrate(video, references[name], poles[name])
         return match, candidates(match, camera)
 
@@ -180,6 +211,9 @@ def main():
     holdout = prepare(*args.holdout)
     result = {'development': names, 'holdout': args.holdout[1], 'holdout_fps': holdout[0].fps,
               'scores': compare(development, holdout, 0), 'geometry': compare(development, holdout, 1)}
+    if args.support_penalty is not None:
+        result['support_parameters'] = args.support_penalty
+        result['foot_support'] = compare(development, holdout, 0, support_penalty=args.support_penalty)
     print(json.dumps(result, indent=2))
 
 
