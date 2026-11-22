@@ -31,11 +31,13 @@ def load_sequence(cache,source):
         first = frame_ids[0]
         dense = np.arange(first,frame_ids[-1]+1)
         sparse = frame_ids-first
+        court_valid = np.zeros(len(dense), dtype=bool)
+        court_valid[sparse] = data['court_valid'] if 'court_valid' in data else True
         values = {}
         for key,fill in [('points',np.nan),('boxes',np.nan),('scores',0)]:
             values[key] = np.full((len(dense),*data[key].shape[1:]),fill,dtype=np.float32)
             values[key][sparse] = data[key]
-    return PoseSequence(dense,np.isin(dense,frame_ids),**values)
+    return PoseSequence(dense,court_valid,**values)
 
 
 def load_examples(cache,source,split,*,soft_boundaries=False,frame_steps=()):

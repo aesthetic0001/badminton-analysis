@@ -258,3 +258,18 @@ Two refits used the same data, architecture, seeds, and 40-epoch schedule. The o
 Six of the earlier refit's false flags fell immediately after the switch from a player close-up to the wide court view at frame 11579. For a diagnostic rescore, mark the six decoded context frames 11573–11578 as invalid in the holdout sequence's existing `court_valid` mask. At the frozen cutoffs, all three models then had 5/474 false flags with the same airborne counts. The audit used a manually verified camera cut on the scored match. The remaining false flags fell near takeoff and landing. This match still falls short of the joint recall and false-positive targets.
 
 For the refits, add 0022, 0036, and 0042 to the earlier `--fit-reviewed-source` arguments and pass `--hard-negative-weight 2` or `--hard-negative-weight 4`. Evaluate with `compare_pose_refit.py` on the four development matches above and the 0025 holdout.
+
+## Court visibility around broadcast cuts
+
+The pose pipeline already uses a court-validity mask to exclude context from other camera views. An optional cache check populates this mask using the existing court-line agreement score against the match's reference homography. On 0025, the check identified the same six close-up frames as the manual review. A cutoff of 0.45 also rejected seven valid frames on 0022 during a score overlay. A cutoff of 0.40 retained those seven and still rejected the six close-up frames on 0025. This cutoff was chosen before reviewing or scoring 0024.
+
+[FineBadminton 0024](labels/finebadminton-0024.csv) is a 24.73 fps match between Loh Kean Yew and Toma Junior Popov. Contact review preceded scoring and covered 13 jumps, six sampled rally intervals, and 80 confirmed grounded player-frames immediately after five returns to the wide court view. One jump had no jump tag. The full review contains 117 airborne, 504 negative, and 63 uncertain player-frames. All binary-labeled frames received scores in both runs. The sample includes extra post-cut frames to measure the effect of those cuts. [FineBadminton release](https://huggingface.co/datasets/iLearn-Lab/Finebadminton-20K)
+
+| Court-validity mask on 0024 | Airborne frames (of 117) | False flags (of 504) | False flags just after a cut (of 80) | Matched jumps (of 13) |
+| --- | ---: | ---: | ---: | ---: |
+| Observed poses | 113 | 25 | 24 | 12 |
+| Observed poses with court agreement of at least 0.40 | 113 | 1 | 0 | 12 |
+
+Both runs used the frozen expanded-reviewed-round1 pose ensemble, the score-only verifier fit on 0063, 0013, 0018, and 0028, and the same score cutoff (0.955325862163521). The court check reached 0.20% false positives and 96.58% airborne-frame recall on 0024.
+
+Use `check_pose_court.py VIDEO POSE_NPZ REFERENCE_FRAME FILTERED_CACHE/SOURCE.npz --minimum 0.40` to generate the filtered cache. Run `compare_pose_refit.py` with the four development sources above and score the original and filtered holdout caches separately. The reference frame for 0024 is 22133.
