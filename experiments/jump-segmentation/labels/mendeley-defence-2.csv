@@ -1,0 +1,3 @@
+player,start_frame,stop_frame,state,split,kind
+near,6,14,grounded,train,lunge
+near,14,24,grounded,train,recovery

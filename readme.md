@@ -50,3 +50,60 @@ To export the last view from an existing full replay:
 ```
 
 Replay exports retain source frame IDs and matching audio; they use cached observations without model inference. FFmpeg is required for video export.
+
+### Jump segmentation and correction
+
+Train from a pose cache and a CSV of visually reviewed, half-open source-frame intervals. The columns are `player,start_frame,stop_frame,state,split,kind`. Use `near` or `far` for player and `train` or `validation` for split. Use `airborne` for jumps that warrant position correction, `grounded` when a foot is in contact, and `no_correction` for reviewed movements whose impact on the projected position is negligible. The latter two are negative classifier targets. Use `uncertain` when a frame cannot be judged reliably. Mark planted lunges and shuffles as `lunge` and `shuffle` to sample them more often.
+
+```bash
+.venv/bin/python -m badminton_analysis.train_jumps RUN_DIRECTORY LABELS.csv MODEL.pt
+```
+
+Training writes the model and a validation JSON report. Use `--no-augmentation` for the baseline, or `--no-landmark-perturbation` to keep mirroring and frame masking only.
+
+To apply a model, set `jump_checkpoint` and `jump_projection_path` in the player-position notebook. The projection must be a 3×4 NumPy array mapping court metres (including height) into the cached processing pixels for the fixed view. `projection_from_pole_tops` can estimate it from the reference court homography and the annotated net-pole tops in court-X order. The fit uses SciPy from the `monotrack` extra. The notebook saves jump probabilities, trajectories, and event records with the derived analysis. A replay marks fitted positions with a diamond.
+
+To find new training examples, run the review queue on a scored training video. Pass existing label files with `--reviewed` so the queue skips reviewed intervals and protects validation context.
+
+```bash
+.venv/bin/python -m badminton_analysis.review_jumps ANALYSIS_DIRECTORY REVIEW.csv \
+    --reviewed LABELS.csv --reel REVIEW.mp4
+```
+
+The queue includes likely jumps, near-threshold clips, and randomly sampled low-score footage. The reel shows source frame numbers and the player to review. Record verified contact states in the training label format. Confirmed false positives can become hard negatives. Keep validation matches out of this feedback loop so they can measure gains between rounds.
+
+After retraining, pass the pose-cache directory as the source and add `--checkpoint MODEL.pt` to generate a new queue directly from the updated model.
+
+### RGB jump experiment
+
+The RGB experiment takes 13 consecutive broadcast frames and scores the near and far players at the center frame. It preserves the full view at 320×192. During pretraining, optical flow propagates the masks through the clip and the model reconstructs the color in hidden patches. The supervised classifier uses the unmasked RGB frames.
+
+```bash
+.venv/bin/python -m badminton_analysis.train_rgb_mgmae prepare SOURCES.json CACHE_DIRECTORY
+.venv/bin/python -m badminton_analysis.train_rgb_mgmae train CACHE_DIRECTORY RGB_MODEL.pt
+```
+
+The source configuration lists each video and its label CSV. A training source can also specify rally intervals or cached court scores for sampling unlabeled clips. Keep the validation match out of pretraining and fine-tuning. Pass `--pretrain-epochs 0` for a supervised RGB comparison.
+
+For clips with no contact labels, omit `labels` and specify `pretraining`. Set `pretraining_groups` to change the sample size for a source. The training report gives the number of clips and the duration of unique footage used after deduplicating overlapping windows.
+
+To try the same classifier on a single player, build a crop cache from the RGB cache and train from that directory. Both players use the same classifier. A fixed padded box across each 13-frame window keeps court contact and vertical motion in view.
+
+```bash
+.venv/bin/python -m badminton_analysis.prepare_rgb_player_crops CACHE_DIRECTORY CROP_CACHE --weights yolo26m.pt
+.venv/bin/python -m badminton_analysis.train_rgb_mgmae train CROP_CACHE PLAYER_MODEL.pt
+```
+
+The pose masking experiment accepts `--regions body --bone-weight .5` to reconstruct both masked landmarks and vectors between connected joints.
+
+Evaluate a saved RGB checkpoint on a separately prepared, validation-only cache. Use a crop cache for a per-player checkpoint.
+
+```bash
+.venv/bin/python -m badminton_analysis.train_rgb_mgmae evaluate HOLDOUT_CACHE MODEL.pt
+```
+
+### Jump benchmark
+
+The benchmark reports strict frame recall and false-positive rate alongside one-to-one event recall. On 30 fps footage, a reference event up to six frames long allows one frame of error at either boundary. Longer reference events allow two frames. Convert these allowances to the source frame rate. Explicitly uncertain boundary frames widen the reference interval and are excluded from the frame metrics. Grounded frames and negligible split steps count as negatives at every scored frame.
+
+See [experiment results and reviewed labels](experiments/jump-segmentation/README.md) for the cross-match comparison.

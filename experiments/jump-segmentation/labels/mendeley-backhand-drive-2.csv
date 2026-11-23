@@ -1,0 +1,2 @@
+player,start_frame,stop_frame,state,split,kind
+near,17,35,no_correction,validation,shuffle
