@@ -51,16 +51,21 @@ class PoseSequence:
 
 
 def collect_player_poses(store, homography, court_min_score=.45, foot_min_score=.4,
-                         court_margin_m=1., *, landmarks=LANDMARKS):
-    """Associate singles poses in absolute frame order, including across cache chunks."""
+                         court_margin_m=1., *, landmarks=LANDMARKS, include_stance=False):
+    """Associate singles poses across chunks, optionally returning their court stances.
+
+    With include_stance, return the sequence, aligned court positions, and radii.
+    The same selected detection supplies the pose and any usable court position.
+    """
     ids, valid, points, scores, boxes = [], [], [], [], []
+    positions, radii = [], []
     previous = np.full((2, 4), np.nan)
     last_seen = np.full(2, -100)
     court_bounds = np.array([court_width_m, court_length_m])
     for chunk in store.iter_chunks():
         frame_ids = chunk['frame_ids']
         court_valid = chunk['court_scores'] >= court_min_score
-        _, stances = wholebody_court_positions(
+        feet, stances = wholebody_court_positions(
             chunk['keypoints_px'], chunk['keypoint_scores'], homography, foot_min_score,
         )
         candidates = chunk['boxes_xyxy']
@@ -116,10 +121,25 @@ def collect_player_poses(store, homography, court_min_score=.45, foot_min_score=
         chunk_points[matched] = chunk['keypoints_px'][poses][:, landmarks]
         chunk_scores[matched] = chunk['keypoint_scores'][poses][:, landmarks]
         chunk_boxes[matched] = candidates[poses]
+        if include_stance:
+            chunk_positions = np.full((*shape, 2), np.nan)
+            chunk_radii = np.full(shape, np.nan)
+            tracked_on_court = matched.copy()
+            tracked_on_court[matched] = on_court[poses]
+            tracked_poses = selected[tracked_on_court]
+            chunk_positions[tracked_on_court] = stances[tracked_poses]
+            chunk_radii[tracked_on_court] = np.linalg.norm(
+                feet[tracked_poses, 0] - feet[tracked_poses, 1], axis=1,
+            ) / 2
+            positions.append(chunk_positions)
+            radii.append(chunk_radii)
         for output, values in zip((ids, valid, points, scores, boxes),
                                   (frame_ids, court_valid, chunk_points, chunk_scores, chunk_boxes)):
             output.append(values)
-    return PoseSequence(*(np.concatenate(parts) for parts in (ids, valid, points, scores, boxes)))
+    sequence = PoseSequence(*(np.concatenate(parts) for parts in (ids, valid, points, scores, boxes)))
+    if include_stance:
+        return sequence, np.concatenate(positions), np.concatenate(radii)
+    return sequence
 
 
 def _resampled_window_inputs(sequence,frames,players,frame_step):

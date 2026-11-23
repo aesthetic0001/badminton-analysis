@@ -174,6 +174,7 @@ def render_position_replay(run_directory, analysis_directory=None, output=None, 
         ids, eligible, accepted = (data[key] for key in ['frame_ids', 'eligible', 'accepted'])
         jump_xyz = data['jump_xyz_m'] if 'jump_xyz_m' in data else None
         jump_probabilities = data['jump_probabilities'] if jump_xyz is not None else None
+        jump_positions = data['jump_positions_m'] if 'jump_positions_m' in data else None
     expected = np.arange(store.manifest['first_frame_id'], store.manifest['stop_frame_id'])
     if not np.array_equal(ids, expected):
         raise ValueError('Analysis must cover the complete raw frame interval in order.')
@@ -221,8 +222,12 @@ def render_position_replay(run_directory, analysis_directory=None, output=None, 
                     reconstructed = (False, False)
                     frame_points = points[offset]
                     if jump_xyz is not None:
-                        airborne = jump_probabilities[rendered] >= settings['jumps']['threshold']
-                        frame_points[airborne] = jump_xyz[rendered, airborne, :2]
+                        court_valid = chunk['court_scores'][offset] >= settings['court_min_score']
+                        if jump_positions is not None and court_valid:
+                            frame_points = jump_positions[rendered]
+                        elif jump_positions is None:
+                            airborne = jump_probabilities[rendered] >= settings['jumps']['threshold']
+                            frame_points[airborne] = jump_xyz[rendered, airborne, :2]
                         reconstructed = np.isfinite(jump_xyz[rendered]).all(axis=1)
                     frame = view.render(image, int(frame_id), fps, chunk['court_scores'][offset],
                                         frame_points, eligible[rendered], accepted[rendered],
